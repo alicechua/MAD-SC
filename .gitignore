@@ -48,5 +48,6 @@ env/
 
 # ── Logs / coverage ──────────────────────────────────────────────────────────
 *.log
+*.json
 .coverage
 htmlcov/

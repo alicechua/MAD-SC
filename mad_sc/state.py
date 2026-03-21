@@ -56,14 +56,20 @@ class GraphState(TypedDict):
 
     # --- Inputs ---
     word: str
+    word_type: str         # Part of speech, e.g. "noun" or "verb"
     t_old: str             # Label for the old period, e.g. "Corpus 1 (1810–1860)"
     t_new: str             # Label for the new period, e.g. "Corpus 2 (1960–2010)"
     sentences_old: List[str]   # SemEval corpus1 sentences (1810–1860)
     sentences_new: List[str]   # SemEval corpus2 sentences (1960–2010)
 
     # --- Debate outputs (populated by parallel Team nodes) ---
-    arg_change: str            # Argument for semantic change (Team Support)
-    arg_stable: str            # Argument for semantic stability (Team Refuse)
+    arg_change: str            # Latest argument for semantic change (Team Support)
+    arg_stable: str            # Latest argument for semantic stability (Team Refuse)
+
+    # --- Multi-round rebuttal fields (unused in single-round mode) ---
+    num_rounds: int            # Total number of rebuttal rounds requested (default 1)
+    current_round: int         # Round counter, incremented after each Support→Refuse pass
+    debate_history: List[dict] # Full transcript: [{"round": int, "arg_change": str, "arg_stable": str}, ...]
 
     # --- Final verdict (populated by Judge node) ---
     verdict: Optional[dict]    # JudgeVerdict serialised to dict
