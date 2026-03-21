@@ -17,15 +17,30 @@ class JudgeVerdict(BaseModel):
         description="Final verdict on whether genuine diachronic semantic change has occurred."
     )
     change_type: Optional[
-        Literal["Generalization", "Specialization", "Co-hyponymous Transfer"]
+        Literal[
+            "Metaphor",
+            "Metonymy",
+            "Analogy",
+            "Generalization",
+            "Specialization",
+            "Ellipsis",
+            "Antiphrasis",
+            "Auto-Antonym",
+            "Synecdoche",
+        ]
     ] = Field(
         default=None,
         description=(
-            "Type of semantic change. Null when verdict is STABLE.\n"
-            "  - Generalization: meaning broadened to cover more concepts.\n"
-            "  - Specialization: meaning narrowed to a more specific domain.\n"
-            "  - Co-hyponymous Transfer: shifted to a semantically related but "
-            "    distinct concept at the same level of abstraction."
+            "Fine-grained type of semantic change. Null when verdict is STABLE.\n"
+            "  - Metaphor: meaning extended via conceptual similarity (resemblance across domains).\n"
+            "  - Metonymy: meaning shifted via contiguity or association (part-for-whole, cause-for-effect).\n"
+            "  - Analogy: meaning extended via structural resemblance across semantic domains.\n"
+            "  - Generalization: scope broadened to cover a wider range of referents.\n"
+            "  - Specialization: scope narrowed to a specific domain or subset.\n"
+            "  - Ellipsis: compound phrase shortened; meaning transferred to the head noun alone.\n"
+            "  - Antiphrasis: meaning shifted to its opposite through ironic/euphemistic usage.\n"
+            "  - Auto-Antonym: word acquired a sense directly opposite to its original meaning.\n"
+            "  - Synecdoche: part-for-whole or whole-for-part meaning transfer."
         ),
     )
     causal_driver: Optional[Literal["Cultural Shift", "Linguistic Drift"]] = Field(
