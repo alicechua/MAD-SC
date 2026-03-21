@@ -4,9 +4,15 @@ LSC Data Collection Pipeline
 =============================
 Collects raw sentences demonstrating word usage across two eras:
   1. Modern Era  — via DuckDuckGo web search + article scraping
-  2. Deep-Time Era (Old / Middle English) — via Wiktionary API + MED fallback
+  2. Deep-Time Era (Old / Middle English) — OED (primary), Wiktionary, MED (fallbacks)
 
 Outputs a unified JSON file at  data/lsc_context_data.json
+
+OED access
+----------
+Place your exported browser cookies (from www.oed.com after UofT library login)
+at  scripts/oed_cookie.json  (Cookie-Editor JSON format).
+If the file is absent the pipeline falls back to Wiktionary + MED.
 """
 
 import json
@@ -58,6 +64,7 @@ POLITE_DELAY = 1.5  # seconds between outbound requests
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_DIR = PROJECT_ROOT / "data"
 OUTPUT_FILE = OUTPUT_DIR / "lsc_context_data.json"
+OED_COOKIE_FILE = Path(__file__).resolve().parent / "oed_cookie.json"
 
 
 def _sleep():
@@ -155,7 +162,201 @@ class ModernScraper:
 
 
 # ===================================================================
-# 2. Deep-Time Era Scraper
+# 2a. OED Scraper (primary historical source)
+# ===================================================================
+class OEDScraper:
+    """Fetch dated quotations from the Oxford English Dictionary.
+
+    Requires browser session cookies exported from www.oed.com after
+    authenticating via UofT library (or any institutional access).
+    Cookie file format: Cookie-Editor JSON export (list of dicts with
+    'name', 'value', 'domain' keys).
+
+    Date parsing
+    ------------
+    OED uses labels like "OE", "lOE", "a1300", "c1400", "1481".
+    These are mapped to approximate integer years so quotes can be
+    filtered by era.
+    """
+
+    BASE_URL = "https://www.oed.com"
+    SEARCH_URL = "https://www.oed.com/search/dictionary/?scope=Entries&q={word}"
+
+    # Approximate midpoint years for OED period abbreviations
+    _PERIOD_YEARS: dict[str, int] = {
+        "oe": 900,
+        "loe": 1050,
+        "eoe": 800,
+        "eme": 1200,
+        "me": 1350,
+        "lme": 1470,
+        "emode": 1580,
+    }
+
+    def __init__(self, cookie_path: Path, polite_delay: float = POLITE_DELAY):
+        self.polite_delay = polite_delay
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.oed.com/",
+        })
+        self._load_cookies(cookie_path)
+
+    def _load_cookies(self, path: Path) -> None:
+        with open(path, encoding="utf-8") as f:
+            for c in json.load(f):
+                self.session.cookies.set(
+                    c["name"], c["value"],
+                    domain=c.get("domain", "www.oed.com"),
+                )
+
+    # ----- public -----
+
+    def collect_historical(self, word: str, before_year: int = 1900) -> tuple[list[str], str]:
+        """Return (quotes, source_label) for OED quotations before *before_year*."""
+        entry_url = self._find_entry_url(word)
+        if not entry_url:
+            log.warning("OED: no entry found for '%s'", word)
+            return [], "OED (not found)"
+        time.sleep(self.polite_delay)
+        quotes = self._fetch_quotes(entry_url, max_year=before_year - 1)
+        log.info("OED: %d historical quote(s) for '%s' (before %d)", len(quotes), word, before_year)
+        return quotes, "OED"
+
+    def collect_modern(self, word: str, after_year: int = 1900) -> list[str]:
+        """Return OED quotations from *after_year* onwards."""
+        entry_url = self._find_entry_url(word)
+        if not entry_url:
+            return []
+        time.sleep(self.polite_delay)
+        quotes = self._fetch_quotes(entry_url, min_year=after_year)
+        log.info("OED: %d modern quote(s) for '%s' (from %d)", len(quotes), word, after_year)
+        return quotes
+
+    # ----- entry URL resolution -----
+
+    def _find_entry_url(self, word: str) -> Optional[str]:
+        """Resolve a word to its OED entry URL.
+
+        Strategy: try common POS slugs directly, then fall back to search.
+        """
+        slug = word.lower().replace(" ", "_")
+        for suffix in ("_n", "_v", "_adj", "_adv", ""):
+            url = f"{self.BASE_URL}/dictionary/{slug}{suffix}"
+            try:
+                resp = self.session.get(url, timeout=12, allow_redirects=True)
+                if resp.status_code == 200 and "/dictionary/" in resp.url:
+                    soup = BeautifulSoup(resp.text, "html.parser")
+                    if soup.find("li", class_="quotation"):
+                        log.debug("OED: resolved '%s' → %s", word, resp.url)
+                        return resp.url
+            except Exception as exc:
+                log.debug("OED direct slug failed (%s): %s", url, exc)
+            time.sleep(0.4)
+
+        return self._search_entry_url(word)
+
+    def _search_entry_url(self, word: str) -> Optional[str]:
+        search_url = self.SEARCH_URL.format(word=quote(word, safe=""))
+        try:
+            resp = self.session.get(search_url, timeout=12)
+            resp.raise_for_status()
+        except Exception as exc:
+            log.debug("OED search failed: %s", exc)
+            return None
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.find_all("a", href=re.compile(r"/dictionary/")):
+            href = a.get("href", "")
+            if href and "#" not in href:
+                return urljoin(self.BASE_URL, href)
+        return None
+
+    # ----- quote extraction -----
+
+    def _fetch_quotes(
+        self,
+        url: str,
+        min_year: int = 0,
+        max_year: int = 9999,
+    ) -> list[str]:
+        try:
+            resp = self.session.get(url, timeout=15)
+            resp.raise_for_status()
+        except Exception as exc:
+            log.warning("OED page fetch failed (%s): %s", url, exc)
+            return []
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        results: list[str] = []
+
+        for li in soup.find_all("li", class_="quotation"):
+            # --- date ---
+            date_div = li.find("div", class_="quotation-date")
+            if not date_div:
+                continue
+            date_span = date_div.find("span", class_="date")
+            year = self._parse_date(date_span.get_text(strip=True) if date_span else "")
+            if year is None or not (min_year <= year <= max_year):
+                continue
+
+            # --- quote text ---
+            blockquote = li.find("blockquote", class_="quotation-text")
+            if not blockquote:
+                continue
+
+            # Work on a copy so we don't mutate the tree
+            bq = BeautifulSoup(str(blockquote), "html.parser").find("blockquote")
+            # Remove editorial comments (Latin originals, glosses, etc.)
+            for span in bq.find_all("span", class_=re.compile(r"editorial.comment", re.I)):
+                span.decompose()
+            # Replace <mark> (keyword highlight) with its plain text
+            for mark in bq.find_all("mark"):
+                mark.replace_with(mark.get_text())
+            # Remove any remaining citation noise
+            for cite in bq.find_all("cite"):
+                cite.decompose()
+
+            text = re.sub(r"\s+", " ", bq.get_text(separator=" ", strip=True)).strip()
+
+            if 20 <= len(text) <= 800:
+                results.append(text)
+
+        return results
+
+    # ----- date parsing -----
+
+    def _parse_date(self, raw: str) -> Optional[int]:
+        """Map an OED date string to an approximate integer year."""
+        if not raw:
+            return None
+        s = raw.lower().strip()
+
+        # Period label lookup (exact match)
+        if s in self._PERIOD_YEARS:
+            return self._PERIOD_YEARS[s]
+
+        # 4-digit year (possibly prefixed by a, c, >, <, l, e)
+        m = re.search(r"\d{4}", s)
+        if m:
+            return int(m.group())
+
+        # 3-digit year (rare but exists, e.g. c971)
+        m = re.search(r"\d{3}", s)
+        if m:
+            return int(m.group())
+
+        return None
+
+
+# ===================================================================
+# 2b. Deep-Time Era Scraper (Wiktionary + MED fallbacks)
 # ===================================================================
 class HistoricalScraper:
     """Fetch Old/Middle English quotations via Wiktionary & MED with DOM parsing, sanitization, and homograph filtering."""
@@ -169,7 +370,16 @@ class HistoricalScraper:
     def __init__(self, target_quotes: int = 10, use_llm_filter: bool = True):
         self.target_quotes = target_quotes
         self.use_llm_filter = use_llm_filter
-        
+
+        # OED scraper (primary) — only if cookie file exists
+        self.oed: Optional[OEDScraper] = None
+        if OED_COOKIE_FILE.exists():
+            try:
+                self.oed = OEDScraper(OED_COOKIE_FILE)
+                log.info("HistoricalScraper: OED scraper enabled (cookie file found).")
+            except Exception as exc:
+                log.warning("HistoricalScraper: could not init OED scraper: %s", exc)
+
         # Initialize Google GenAI client if available for homograph filtering
         self.llm = None
         if self.use_llm_filter:
@@ -185,16 +395,28 @@ class HistoricalScraper:
 
     # ----- public -----
     def collect(self, word: str, target_meaning: Optional[str] = None) -> tuple[list[str], str]:
-        """
-        Return (quotes, source_label).
-        Tries Wiktionary first; falls back to MED.
+        """Return (quotes, source_label).
+
+        Priority: OED (if cookie file present) → Wiktionary → MED.
         """
         log.info("HistoricalScraper: collecting for '%s' (target meaning: %s)", word, target_meaning)
 
+        # Strategy 1: OED
+        if self.oed is not None:
+            quotes, label = self.oed.collect_historical(word, before_year=1900)
+            if quotes:
+                # Run LLM meaning filter if available
+                if self.llm and target_meaning:
+                    quotes = [q for q in quotes if self._validate_meaning_llm(word, q, target_meaning)]
+                if quotes:
+                    return quotes[: self.target_quotes], label
+
+        # Strategy 2: Wiktionary
         quotes = self._strategy_wiktionary(word, target_meaning)
         if quotes:
             return quotes[: self.target_quotes], "Wiktionary"
 
+        # Strategy 3: MED
         log.info("  Wiktionary yielded nothing — falling back to MED")
         _sleep()
         quotes = self._strategy_med(word, target_meaning)
