@@ -18,7 +18,8 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from typing import Literal
 
-from mad_sc.state import GraphState, JudgeVerdict
+from mad_sc.etymology import fetch_etymology_context, format_etymology_context_for_prompt
+from mad_sc.state import EtymologyResult, GraphState, JudgeVerdict
 
 load_dotenv()
 
@@ -27,6 +28,10 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 _DEFAULT_MODEL_OR  = "google/gemini-2.5-flash"
 _DEFAULT_MODEL_GAS = "gemini-2.0-flash-lite"
+# Judge can use a stronger/reasoning model independently of the team agents.
+# Set JUDGE_MODEL_GAS / JUDGE_MODEL_OR in .env to override; falls back to the team default.
+_JUDGE_MODEL_OR  = os.getenv("JUDGE_MODEL_OR")   # e.g. "google/gemini-2.5-flash"
+_JUDGE_MODEL_GAS = os.getenv("JUDGE_MODEL_GAS")  # e.g. "gemini-2.5-flash"
 # Inter-call delay to stay under free-tier rate limits
 _INTER_CALL_DELAY = float(os.getenv("INTER_CALL_DELAY", "2.0"))
 
@@ -56,6 +61,7 @@ _LABEL_ALIASES: dict[str, str] = {
 }
 
 
+
 def _get_llm(model: str | None = None, temperature: float = 0.7):
     """Instantiate an LLM based on the LLM_BACKEND env variable.
 
@@ -65,6 +71,9 @@ def _get_llm(model: str | None = None, temperature: float = 0.7):
                       Model resolved from DEFAULT_MODEL_GAS env var.
     openrouter        Uses langchain-openai pointed at OpenRouter.
                       Model resolved from DEFAULT_MODEL_OR env var.
+
+    Pass ``model`` explicitly to override the default for a specific call site
+    (e.g. the judge using a stronger reasoning model).
     """
     backend = os.getenv("LLM_BACKEND", "openrouter").lower()
 
@@ -99,6 +108,22 @@ def _get_llm(model: str | None = None, temperature: float = 0.7):
             "X-Title": "MAD-SC Evaluation",
         }
     )
+
+
+def _get_judge_llm(temperature: float = 0.1):
+    """Return an LLM for the judge, optionally using a stronger reasoning model.
+
+    Reads JUDGE_MODEL_GAS / JUDGE_MODEL_OR from the environment.  If unset,
+    falls back to the same model as the team agents.
+
+    Example .env entries
+    --------------------
+    JUDGE_MODEL_GAS=gemini-2.5-flash   # reasoning model for judge on GAS backend
+    JUDGE_MODEL_OR=google/gemini-2.5-flash
+    """
+    backend = os.getenv("LLM_BACKEND", "openrouter").lower()
+    judge_model = _JUDGE_MODEL_GAS if backend == "google_ai_studio" else _JUDGE_MODEL_OR
+    return _get_llm(model=judge_model, temperature=temperature)
 
 
 def _extract_text(response) -> str:
@@ -209,6 +234,154 @@ def _parse_verdict_from_text(word: str, raw_text: str) -> JudgeVerdict:
 
 
 # ---------------------------------------------------------------------------
+# Grounding Node
+# ---------------------------------------------------------------------------
+
+def grounding_node(state: GraphState) -> dict:
+    """Pre-debate grounding: compute SED/TD metrics and build a HypothesisDocument.
+
+    Runs the pre_debate_grounding pipeline (WordNet substitutes → BERT SED →
+    Time Difference) and stores the formatted prompt block in state.
+    If grounding fails for any reason the pipeline continues without it —
+    the team nodes simply receive an empty grounding_block.
+    """
+    try:
+        from mad_sc.pre_debate_grounding import run_grounding_pipeline
+        doc = run_grounding_pipeline(
+            word=state["word"],
+            sentences_old=state["sentences_old"],
+            sentences_new=state["sentences_new"],
+            t_old=state["t_old"],
+            t_new=state["t_new"],
+            top_k=3,
+            n_per_type=2,
+            max_sentences=10,
+        )
+        block = doc.to_prompt_block()
+        print(f"[GROUNDING] Hypothesis document generated for '{state['word']}'")
+        return {"grounding_block": block}
+    except Exception as exc:
+        print(f"[GROUNDING] Skipped for '{state['word']}': {exc}")
+        return {"grounding_block": ""}
+
+
+# ---------------------------------------------------------------------------
+# Lexicographer Node
+# ---------------------------------------------------------------------------
+
+_LEXICOGRAPHER_SYSTEM = """\
+You are an expert historical lexicographer specialising in diachronic English semantics.
+
+Your task is to analyse DATED QUOTATIONS from the Oxford English Dictionary and produce \
+a precise Definition Dossier for a target word. You must reason directly from the \
+provided quote evidence — not from general knowledge.
+
+CRITICAL: Work in two stages before writing your definitions.
+
+STAGE 1 — Quote-by-quote sense analysis
+  For each historical quote (pre-1900), write one line identifying the sense of the \
+word in that quote. For each modern quote (post-1900), write one line identifying the \
+sense of the word in that quote.
+
+STAGE 2 — Synthesis
+  What is the DOMINANT sense across historical quotes? That is the OLD SENSE.
+  What is the DOMINANT sense across modern quotes? That is the NEW SENSE.
+  Is the NEW SENSE genuinely different from the OLD SENSE, or is it the same sense \
+in a new context?
+
+MECHANISM DECISION GUIDE (Blank's taxonomy)
+  Metaphor    : meaning extended by SIMILARITY across semantic domains
+                (e.g. mouse: animal → computer peripheral, both small and scurrying)
+  Metonymy    : meaning extended by CONTIGUITY / association in the same domain
+                (e.g. bead: prayer-ball → decorative ball, via prayer→ornament context)
+  Ellipsis    : a COMPOUND is shortened; the modifier alone takes the compound's meaning
+                (e.g. "motor car" → "car"; "canine unit" → "canine")
+  Specialization : meaning NARROWS to a subset of the original referents
+                (e.g. corn: any grain → specifically maize in American English)
+  Generalization : meaning BROADENS to cover a superset of original referents
+  Antiphrasis : word takes on the OPPOSITE evaluative polarity in a fixed phrase
+  Auto-Antonym: word gains a sense that is the OPPOSITE of its core meaning
+                (e.g. bad → "excellent" in slang; sanction → permit AND prohibit)
+  Analogy     : meaning shifts by structural parallel with another word/concept
+  Synecdoche  : part-for-whole or whole-for-part substitution
+  STABLE      : old and new senses are functionally identical — no genuine shift
+
+KEY RULES
+  - Ground every definition in what the QUOTES ACTUALLY SHOW, not general knowledge.
+  - The corpus period is 1810–2009 (American English). Prioritise shifts visible within \
+this window. Ancient shifts (pre-1800) that are already complete by 1810 may appear \
+STABLE in corpus data even if the word has an interesting etymology.
+  - Be decisive: choose one mechanism. Do not hedge with "possibly" or leave null.
+  - Fill synthesis_reasoning FIRST — it is your scratchpad. Your definitions must \
+follow from your reasoning."""
+
+_LEXICOGRAPHER_USER = """\
+Target word: "{word}"
+
+--- OED evidence ---
+{etymology_context}
+--- End of evidence ---
+
+Follow the two-stage process:
+
+STAGE 1: For EACH quote above, write one line:
+  "[year] HISTORICAL/MODERN — sense: <what the word means in this quote>"
+
+STAGE 2: Synthesise:
+  OLD SENSE (dominant across historical quotes): ...
+  NEW SENSE (dominant across modern quotes): ...
+  Change between periods: ...
+  Best-fit mechanism: ... (because ...)
+
+Then produce the structured EtymologyResult fields:
+  synthesis_reasoning  : your full Stage 1 + Stage 2 notes
+  target_word          : "{word}"
+  old_sense_definition : ONE sentence grounded in Stage 2
+  new_sense_definition : ONE sentence grounded in Stage 2
+  year_of_shift        : year if determinable from the quotes, else null
+  mechanism_of_change  : the mechanism from Stage 2"""
+
+
+def lexicographer_node(state: GraphState) -> dict:
+    """Lexicographer Agent: fetches OED/Wiktionary evidence and produces a Definition Dossier.
+
+    Step 1: fetch_etymology_context(word) → OED dated quotes + Wiktionary etymology.
+    Step 2: LLM synthesises an EtymologyResult from the evidence via structured output.
+    Step 3: to_dossier_block() formats it for injection into team system prompts.
+
+    Falls back gracefully — if fetching or LLM call fails, teams receive no dossier.
+    """
+    word = state["word"]
+    try:
+        # Step 1 — fetch real etymological evidence
+        ctx = fetch_etymology_context(word)
+        etymology_str = format_etymology_context_for_prompt(ctx)
+
+        # Step 2 — LLM synthesises structured EtymologyResult from evidence
+        llm = _get_llm(temperature=0.1).with_structured_output(EtymologyResult)
+        messages = [
+            SystemMessage(content=_LEXICOGRAPHER_SYSTEM),
+            HumanMessage(content=_LEXICOGRAPHER_USER.format(
+                word=word,
+                etymology_context=etymology_str,
+            )),
+        ]
+        result: EtymologyResult = _robust_invoke(llm, messages)
+        if result is None:
+            raise ValueError("LLM returned None for EtymologyResult")
+
+        dossier = result.to_dossier_block()
+        print(f"[LEXICOGRAPHER] Dossier produced for '{word}' "
+              f"(source: {ctx['source']}, mechanism: {result.mechanism_of_change}, "
+              f"year: {result.year_of_shift})")
+        return {"lexicographer_dossier": dossier}
+
+    except Exception as exc:
+        print(f"[LEXICOGRAPHER] Skipped for '{word}': {exc}")
+        return {"lexicographer_dossier": ""}
+
+
+# ---------------------------------------------------------------------------
 # Team Support Node
 # ---------------------------------------------------------------------------
 
@@ -257,10 +430,16 @@ def team_support_node(state: GraphState) -> dict:
     sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
     sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
 
+    # Inject lexicographer dossier first (highest priority context), then BERT grounding.
+    dossier = state.get("lexicographer_dossier", "") or ""
+    grounding = state.get("grounding_block", "") or ""
+    preamble = "\n\n".join(filter(None, [dossier, grounding]))
+    system_content = f"{preamble}\n\n{_SUPPORT_SYSTEM}" if preamble else _SUPPORT_SYSTEM
+
     response = _robust_invoke(
         llm,
         [
-            SystemMessage(content=_SUPPORT_SYSTEM),
+            SystemMessage(content=system_content),
             HumanMessage(
                 content=_SUPPORT_USER.format(
                     word=state["word"],
@@ -316,10 +495,16 @@ def team_refuse_node(state: GraphState) -> dict:
     sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
     sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
 
+    # Inject lexicographer dossier first (highest priority context), then BERT grounding.
+    dossier = state.get("lexicographer_dossier", "") or ""
+    grounding = state.get("grounding_block", "") or ""
+    preamble = "\n\n".join(filter(None, [dossier, grounding]))
+    system_content = f"{preamble}\n\n{_REFUSE_SYSTEM}" if preamble else _REFUSE_SYSTEM
+
     response = _robust_invoke(
         llm,
         [
-            SystemMessage(content=_REFUSE_SYSTEM),
+            SystemMessage(content=system_content),
             HumanMessage(
                 content=_REFUSE_USER.format(
                     word=state["word"],
@@ -598,7 +783,7 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
         )),
     ]
     try:
-        llm = _get_llm(temperature=0.1).with_structured_output(_CoarseVerdict)
+        llm = _get_judge_llm(temperature=0.1).with_structured_output(_CoarseVerdict)
         result = _robust_invoke(llm, messages)
         if result is not None:
             print(f"[JUDGE-S1] '{word}' → {result.coarse_category}")
@@ -607,7 +792,7 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
         print(f"[JUDGE-S1] Structured output failed for '{word}': {e}. Trying raw.")
 
     # Fallback: raw text parse for coarse category
-    raw_llm = _get_llm(temperature=0.1)
+    raw_llm = _get_judge_llm(temperature=0.1)
     messages_raw = [
         SystemMessage(content=_JUDGE_COARSE_SYSTEM),
         HumanMessage(content=_JUDGE_COARSE_USER.format(
@@ -641,7 +826,7 @@ def _run_transfer_stage(word: str, t_old: str, t_new: str,
         )),
     ]
     try:
-        llm = _get_llm(temperature=0.2).with_structured_output(JudgeVerdict)
+        llm = _get_judge_llm(temperature=0.2).with_structured_output(JudgeVerdict)
         verdict = _robust_invoke(llm, messages)
         if verdict is not None and verdict.change_type in _TRANSFER_TYPES:
             print(f"[JUDGE-S2] '{word}' → {verdict.change_type}")
@@ -650,7 +835,7 @@ def _run_transfer_stage(word: str, t_old: str, t_new: str,
         print(f"[JUDGE-S2] Structured output failed for '{word}': {e}. Falling back.")
 
     # Fallback: raw text
-    raw_llm = _get_llm(temperature=0.1)
+    raw_llm = _get_judge_llm(temperature=0.1)
     resp = _robust_invoke(raw_llm, messages)
     verdict = _parse_verdict_from_text(word, _extract_text(resp))
     print(f"[JUDGE-S2-fallback] '{word}' → {verdict.change_type}")

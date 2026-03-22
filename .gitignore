@@ -50,3 +50,15 @@ env/
 *.log
 .coverage
 htmlcov/
+
+# Evaluation Results
+eval_results*/
+evals/
+
+# Project notes (local only)
+EXPERIMENTS.md
+TODO.md
+.claude/skills/
+
+# OED session cookies (sensitive, local only)
+scripts/oed_cookie.json

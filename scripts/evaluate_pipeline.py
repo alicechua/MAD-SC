@@ -443,6 +443,34 @@ def main():
         action="store_true",
         help="Skip words that already have a successful trace in the output directory",
     )
+    grounding_group = parser.add_mutually_exclusive_group()
+    grounding_group.add_argument(
+        "--grounding",
+        dest="use_grounding",
+        action="store_true",
+        default=None,
+        help="Enable pre-debate BERT grounding (SED/TD). Overrides USE_GROUNDING env var.",
+    )
+    grounding_group.add_argument(
+        "--no-grounding",
+        dest="use_grounding",
+        action="store_false",
+        help="Disable pre-debate BERT grounding. Overrides USE_GROUNDING env var.",
+    )
+    lex_group = parser.add_mutually_exclusive_group()
+    lex_group.add_argument(
+        "--lexicographer",
+        dest="use_lexicographer",
+        action="store_true",
+        default=None,
+        help="Enable Lexicographer Agent (Definition Dossier). Overrides USE_LEXICOGRAPHER env var.",
+    )
+    lex_group.add_argument(
+        "--no-lexicographer",
+        dest="use_lexicographer",
+        action="store_false",
+        help="Disable Lexicographer Agent. Overrides USE_LEXICOGRAPHER env var.",
+    )
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
@@ -465,8 +493,16 @@ def main():
     # ------------------------------------------------------------------
     # 2. Compile pipeline graph
     # ------------------------------------------------------------------
-    log.info("Compiling MAD-SC LangGraph pipeline…")
-    graph = compile_graph()
+    # use_grounding=None means the flag wasn't passed → fall back to compile_graph default
+    graph_kwargs = {}
+    if args.use_grounding is not None:
+        graph_kwargs["use_grounding"] = args.use_grounding
+    if args.use_lexicographer is not None:
+        graph_kwargs["use_lexicographer"] = args.use_lexicographer
+    log.info("Compiling MAD-SC LangGraph pipeline… (grounding=%s, lexicographer=%s)",
+             graph_kwargs.get("use_grounding", "env/default"),
+             graph_kwargs.get("use_lexicographer", "env/default"))
+    graph = compile_graph(**graph_kwargs)
 
     # ------------------------------------------------------------------
     # 3. Run pipeline on each word

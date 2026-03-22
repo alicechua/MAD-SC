@@ -32,11 +32,21 @@ load_dotenv()
 
 def main() -> None:
     # ------------------------------------------------------------------
-    # Pick target word: CLI arg > first entry in targets.txt > fallback
+    # Pick target word and flags from CLI args
     # ------------------------------------------------------------------
+    import argparse
+    parser = argparse.ArgumentParser(description="MAD-SC CLI demo")
+    parser.add_argument("word", nargs="?", default=None, help="Target word (e.g. edge_nn)")
+    grp = parser.add_mutually_exclusive_group()
+    grp.add_argument("--grounding", dest="use_grounding", action="store_true", default=None,
+                     help="Enable pre-debate BERT grounding")
+    grp.add_argument("--no-grounding", dest="use_grounding", action="store_false",
+                     help="Disable pre-debate BERT grounding")
+    args = parser.parse_args()
+
     targets = get_targets()
-    if len(sys.argv) > 1:
-        word = sys.argv[1]
+    if args.word:
+        word = args.word
     elif targets:
         word = targets[0]
     else:
@@ -58,7 +68,8 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Build and invoke the LangGraph pipeline
     # ------------------------------------------------------------------
-    graph = compile_graph()
+    grounding_kwargs = {} if args.use_grounding is None else {"use_grounding": args.use_grounding}
+    graph = compile_graph(**grounding_kwargs)
 
     initial_state = {
         "word": word,
