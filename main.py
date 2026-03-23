@@ -115,7 +115,7 @@ def main() -> None:
     grounding_kwargs = {} if args.use_grounding is None else {"use_grounding": args.use_grounding}
 
     if mode == "multi":
-        graph = compile_multi_round_graph(num_rounds=num_rounds)
+        graph = compile_multi_round_graph(num_rounds=num_rounds, **grounding_kwargs)
     else:
         graph = compile_graph(**grounding_kwargs)
 

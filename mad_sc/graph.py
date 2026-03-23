@@ -34,8 +34,8 @@ from mad_sc.nodes import grounding_node, judge_node, lexicographer_node, team_re
 from mad_sc.state import GraphState
 
 # Default controlled by env var so scripts and the Streamlit UI share one setting.
-_GROUNDING_DEFAULT = os.getenv("USE_GROUNDING", "true").lower() not in ("0", "false", "no")
-_LEXICOGRAPHER_DEFAULT = os.getenv("USE_LEXICOGRAPHER", "false").lower() not in ("0", "false", "no")
+_GROUNDING_DEFAULT = os.getenv("USE_GROUNDING", "false").lower() not in ("0", "false", "no")
+_LEXICOGRAPHER_DEFAULT = os.getenv("USE_LEXICOGRAPHER", "true").lower() not in ("0", "false", "no")
 
 
 def compile_graph(

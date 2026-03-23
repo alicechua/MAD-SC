@@ -464,9 +464,7 @@ def team_support_node(state: GraphState) -> dict:
 
     # Inject lexicographer dossier first (highest priority context), then BERT grounding.
     dossier = state.get("lexicographer_dossier", "") or ""
-    grounding = state.get("grounding_block", "") or ""
-    preamble = "\n\n".join(filter(None, [dossier, grounding]))
-    system_content = f"{preamble}\n\n{_SUPPORT_SYSTEM}" if preamble else _SUPPORT_SYSTEM
+    system_content = f"{dossier}\n\n{_SUPPORT_SYSTEM}" if dossier else _SUPPORT_SYSTEM
 
     response = _robust_invoke(
         llm,
@@ -530,9 +528,7 @@ def team_refuse_node(state: GraphState) -> dict:
 
     # Inject lexicographer dossier first (highest priority context), then BERT grounding.
     dossier = state.get("lexicographer_dossier", "") or ""
-    grounding = state.get("grounding_block", "") or ""
-    preamble = "\n\n".join(filter(None, [dossier, grounding]))
-    system_content = f"{preamble}\n\n{_REFUSE_SYSTEM}" if preamble else _REFUSE_SYSTEM
+    system_content = f"{dossier}\n\n{_REFUSE_SYSTEM}" if dossier else _REFUSE_SYSTEM
 
     response = _robust_invoke(
         llm,
@@ -807,10 +803,15 @@ object with your final structured verdict. Use the exact JSON schema from your i
 
 
 def _run_coarse_stage(word: str, t_old: str, t_new: str,
-                      arg_change: str, arg_stable: str) -> _CoarseVerdict | None:
+                      arg_change: str, arg_stable: str,
+                      lexicographer_dossier: str = "") -> _CoarseVerdict | None:
     """Stage 1: classify into STABLE / Transfer / Broadening / Narrowing."""
+    coarse_system = (
+        f"{lexicographer_dossier}\n\n{_JUDGE_COARSE_SYSTEM}"
+        if lexicographer_dossier else _JUDGE_COARSE_SYSTEM
+    )
     messages = [
-        SystemMessage(content=_JUDGE_COARSE_SYSTEM),
+        SystemMessage(content=coarse_system),
         HumanMessage(content=_JUDGE_COARSE_USER.format(
             word=word, t_old=t_old, t_new=t_new,
             arg_change=arg_change, arg_stable=arg_stable,
@@ -828,7 +829,7 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
     # Fallback: raw text parse for coarse category
     raw_llm = _get_judge_llm(temperature=0.1)
     messages_raw = [
-        SystemMessage(content=_JUDGE_COARSE_SYSTEM),
+        SystemMessage(content=coarse_system),
         HumanMessage(content=_JUDGE_COARSE_USER.format(
             word=word, t_old=t_old, t_new=t_new,
             arg_change=arg_change, arg_stable=arg_stable,
@@ -849,10 +850,15 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
 
 def _run_transfer_stage(word: str, t_old: str, t_new: str,
                         arg_change: str, arg_stable: str,
-                        coarse_reasoning: str) -> JudgeVerdict:
+                        coarse_reasoning: str,
+                        lexicographer_dossier: str = "") -> JudgeVerdict:
     """Stage 2: identify exact Transfer mechanism."""
+    transfer_system = (
+        f"{lexicographer_dossier}\n\n{_JUDGE_TRANSFER_SYSTEM}"
+        if lexicographer_dossier else _JUDGE_TRANSFER_SYSTEM
+    )
     messages = [
-        SystemMessage(content=_JUDGE_TRANSFER_SYSTEM),
+        SystemMessage(content=transfer_system),
         HumanMessage(content=_JUDGE_TRANSFER_USER.format(
             word=word, t_old=t_old, t_new=t_new,
             arg_change=arg_change, arg_stable=arg_stable,
@@ -887,9 +893,11 @@ def judge_node(state: GraphState) -> dict:
     word = state["word"]
     t_old, t_new = state["t_old"], state["t_new"]
     arg_change, arg_stable = state["arg_change"], state["arg_stable"]
+    dossier = state.get("lexicographer_dossier", "") or ""
 
     # ── Stage 1: Coarse ──────────────────────────────────────────────────────
-    coarse = _run_coarse_stage(word, t_old, t_new, arg_change, arg_stable)
+    coarse = _run_coarse_stage(word, t_old, t_new, arg_change, arg_stable,
+                               lexicographer_dossier=dossier)
 
     if coarse is None or coarse.coarse_category == "STABLE":
         return {"verdict": JudgeVerdict(
@@ -921,7 +929,8 @@ def judge_node(state: GraphState) -> dict:
 
     # ── Stage 2: Fine-grained Transfer ───────────────────────────────────────
     verdict = _run_transfer_stage(
-        word, t_old, t_new, arg_change, arg_stable, coarse.reasoning
+        word, t_old, t_new, arg_change, arg_stable, coarse.reasoning,
+        lexicographer_dossier=dossier,
     )
     return {"verdict": verdict.model_dump()}
 
