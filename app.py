@@ -22,6 +22,7 @@ from mad_sc.data_loader import (
 )
 from mad_sc.etymology import fetch_etymology_context
 from mad_sc.graph import compile_graph
+from mad_sc.log_utils import append_debate_log
 
 load_dotenv()
 
@@ -239,8 +240,12 @@ verdict_box.info("Awaiting Judge verdict…")
 # Step 5 — Stream the LangGraph pipeline
 # ---------------------------------------------------------------------------
 
+# Derive word_type from the trailing _nn / _vb suffix.
+word_type = "verb" if word.endswith("_vb") else "noun"
+
 initial_state = {
     "word": word,
+    "word_type": word_type,
     "t_old": t_old_label,
     "t_new": t_new_label,
     "sentences_old": sentences_old,
@@ -252,6 +257,12 @@ initial_state = {
 
 graph = get_graph(use_grounding, use_lexicographer)
 
+# Accumulate debate content across streamed node updates so we can persist
+# the full trail after streaming completes (without a second LLM call).
+_arg_change: str = ""
+_arg_stable: str = ""
+_verdict_dict: dict = {}
+
 with st.status(
     f"Running debate for '{word}'…",
     expanded=True,
@@ -262,20 +273,22 @@ with st.status(
 
             # ── Team Support ──────────────────────────────────────────────
             if node_name == "team_support":
-                support_box.markdown(_extract_text(update.get("arg_change", "")))
+                _arg_change = _extract_text(update.get("arg_change", ""))
+                support_box.markdown(_arg_change)
                 st.write("Team Support completed.")
 
             # ── Team Refuse ───────────────────────────────────────────────
             elif node_name == "team_refuse":
-                refuse_box.markdown(_extract_text(update.get("arg_stable", "")))
+                _arg_stable = _extract_text(update.get("arg_stable", ""))
+                refuse_box.markdown(_arg_stable)
                 st.write("Team Refuse completed.")
 
             # ── Judge ─────────────────────────────────────────────────────
             elif node_name == "judge":
-                v = update.get("verdict", {})
+                _verdict_dict = update.get("verdict", {})
                 st.write("Judge rendered verdict.")
 
-                verdict_label = v.get("verdict", "UNKNOWN")
+                verdict_label = _verdict_dict.get("verdict", "UNKNOWN")
                 change_detected = verdict_label == "CHANGE DETECTED"
 
                 with verdict_box.container():
@@ -286,16 +299,31 @@ with st.status(
 
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Verdict", verdict_label)
-                    m2.metric("Change Type", v.get("change_type") or "N/A")
-                    m3.metric("Causal Driver", v.get("causal_driver") or "N/A")
+                    m2.metric("Change Type", _verdict_dict.get("change_type") or "N/A")
+                    m3.metric("Causal Driver", _verdict_dict.get("causal_driver") or "N/A")
 
-                    if v.get("break_point_year"):
-                        st.metric("Estimated Break-point Year", v["break_point_year"])
+                    if _verdict_dict.get("break_point_year"):
+                        st.metric("Estimated Break-point Year", _verdict_dict["break_point_year"])
 
                     st.markdown("**Reasoning**")
-                    st.markdown(v.get("reasoning", ""))
+                    st.markdown(_verdict_dict.get("reasoning", ""))
 
                     with st.expander("Raw JSON output"):
-                        st.json(v)
+                        st.json(_verdict_dict)
 
     debate_status.update(label="Debate complete.", state="complete", expanded=False)
+
+# ---------------------------------------------------------------------------
+# Persist the full debate trail once streaming is complete.
+# All three values (_arg_change, _arg_stable, _verdict_dict) were accumulated
+# per-node during the stream loop above; no second LLM call is needed.
+# ---------------------------------------------------------------------------
+
+_final_state = {
+    **initial_state,
+    "arg_change": _arg_change,
+    "arg_stable": _arg_stable,
+    "verdict": _verdict_dict,
+}
+append_debate_log(_final_state)
+st.caption("✅ Debate trail saved to `debate_logs.json`.")

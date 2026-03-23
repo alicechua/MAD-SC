@@ -12,6 +12,7 @@ import os
 import re
 import time
 
+from typing import Any
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -26,8 +27,10 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-_DEFAULT_MODEL_OR  = "google/gemini-2.5-flash"
-_DEFAULT_MODEL_GAS = "gemini-2.0-flash-lite"
+_DEFAULT_MODEL_OR   = "google/gemini-2.5-flash"
+_DEFAULT_MODEL_GAS  = "gemini-2.0-flash-lite"
+_DEFAULT_MODEL_VAI  = "gemini-2.5-flash"
+_DEFAULT_MODEL_GROQ = "llama3-70b-8192"
 # Judge can use a stronger/reasoning model independently of the team agents.
 # Set JUDGE_MODEL_GAS / JUDGE_MODEL_OR in .env to override; falls back to the team default.
 _JUDGE_MODEL_OR  = os.getenv("JUDGE_MODEL_OR")   # e.g. "google/gemini-2.5-flash"
@@ -61,14 +64,17 @@ _LABEL_ALIASES: dict[str, str] = {
 }
 
 
-
-def _get_llm(model: str | None = None, temperature: float = 0.7):
+def _get_llm(model: str | None = None, temperature: float = 0.7) -> Any:
     """Instantiate an LLM based on the LLM_BACKEND env variable.
 
     Backends
     --------
     google_ai_studio  Uses langchain-google-genai + GOOGLE_AI_STUDIO_KEY.
                       Model resolved from DEFAULT_MODEL_GAS env var.
+    vertex_ai         Uses langchain-google-genai + VERTEX_AI_KEY (Express mode).
+                      Model resolved from DEFAULT_MODEL_VAI env var.
+    groq              Uses langchain-groq + GROQ_API_KEY.
+                      Model resolved from DEFAULT_MODEL_GROQ env var.
     openrouter        Uses langchain-openai pointed at OpenRouter.
                       Model resolved from DEFAULT_MODEL_OR env var.
 
@@ -89,6 +95,32 @@ def _get_llm(model: str | None = None, temperature: float = 0.7):
             google_api_key=api_key,
             max_retries=3,
             max_output_tokens=2048,
+        )
+
+    if backend == "vertex_ai":
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        api_key = os.getenv("VERTEX_AI_KEY")
+        if not api_key:
+            raise EnvironmentError("LLM_BACKEND=vertex_ai but VERTEX_AI_KEY is not set in .env.")
+        resolved_model = model or os.getenv("DEFAULT_MODEL_VAI", _DEFAULT_MODEL_VAI)
+        return ChatGoogleGenerativeAI(
+            model=resolved_model,
+            google_api_key=api_key,
+            temperature=temperature,
+            vertexai=True,
+            location="global",
+        )
+
+    if backend == "groq":
+        from langchain_groq import ChatGroq
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            raise EnvironmentError("LLM_BACKEND=groq but GROQ_API_KEY is not set in .env.")
+        resolved_model = model or os.getenv("DEFAULT_MODEL_GROQ", _DEFAULT_MODEL_GROQ)
+        return ChatGroq(
+            model=resolved_model,
+            api_key=api_key,
+            temperature=temperature,
         )
 
     # Default: openrouter
@@ -409,7 +441,7 @@ Requirements
 
 Be specific, cite corpus evidence directly, and construct a compelling argument."""
 
-_SUPPORT_USER = """Analyze the semantic change of the word: "{word}"
+_SUPPORT_USER = """Analyze the semantic change of the word: "{word}" (used as a {word_type})
 
 SENTENCES FROM {t_old}:
 {sentences_old}
@@ -443,6 +475,7 @@ def team_support_node(state: GraphState) -> dict:
             HumanMessage(
                 content=_SUPPORT_USER.format(
                     word=state["word"],
+                    word_type=state.get("word_type", "word"),
                     t_old=state["t_old"],
                     t_new=state["t_new"],
                     sentences_old=sentences_old,
@@ -475,7 +508,7 @@ Requirements
 
 Be specific, cite corpus evidence directly, and construct a compelling argument."""
 
-_REFUSE_USER = """Analyze the semantic stability of the word: "{word}"
+_REFUSE_USER = """Analyze the semantic stability of the word: "{word}" (used as a {word_type})
 
 SENTENCES FROM {t_old}:
 {sentences_old}
@@ -508,6 +541,7 @@ def team_refuse_node(state: GraphState) -> dict:
             HumanMessage(
                 content=_REFUSE_USER.format(
                     word=state["word"],
+                    word_type=state.get("word_type", "word"),
                     t_old=state["t_old"],
                     t_new=state["t_new"],
                     sentences_old=sentences_old,
@@ -759,7 +793,7 @@ IMPORTANT: You MUST output a valid JSON object matching this schema exactly:
   "reasoning": "<your full reasoning>"
 }"""
 
-_JUDGE_USER = """Evaluate the following debate about the word "{word}" \
+_JUDGE_USER = """Evaluate the following debate about the word "{word}" (used as a {word_type}) \
 ({t_old} vs. {t_new}):
 
 --- ARGUMENT FOR CHANGE (Team Support) ---
@@ -890,3 +924,155 @@ def judge_node(state: GraphState) -> dict:
         word, t_old, t_new, arg_change, arg_stable, coarse.reasoning
     )
     return {"verdict": verdict.model_dump()}
+
+
+# ---------------------------------------------------------------------------
+# Multi-Round Rebuttal Nodes
+# ---------------------------------------------------------------------------
+
+_REBUTTAL_SUPPORT_SYSTEM = """You are a computational linguist on **Team Support**.
+Your goal is to argue that the target word HAS undergone genuine diachronic semantic change.
+
+This is a REBUTTAL round. You have just read Team Refuse's counter-argument claiming the
+word is semantically stable. Your job is to:
+1. Directly address and refute the weakest points in their argument.
+2. Reinforce your strongest evidence with new angles or additional detail.
+3. Name the Change Type (Generalization / Specialization / Co-hyponymous Transfer).
+4. Name the Causal Driver (Cultural Shift / Linguistic Drift).
+
+Be direct, adversarial, and cite corpus evidence."""
+
+_REBUTTAL_SUPPORT_USER = """Debate round {current_round} of {num_rounds}.
+Word: "{word}" (used as a {word_type}) — {t_old} vs {t_new}
+
+--- CORPUS EVIDENCE ---
+SENTENCES FROM {t_old}:
+{sentences_old}
+
+SENTENCES FROM {t_new}:
+{sentences_new}
+
+--- TEAM REFUSE'S LATEST ARGUMENT (what you must rebut) ---
+{arg_stable}
+
+Write your rebuttal Arg_change, directly countering Team Refuse's claims above."""
+
+
+_REBUTTAL_REFUSE_SYSTEM = """You are a computational linguist on **Team Refuse**.
+Your goal is to argue that the target word has NOT undergone genuine diachronic semantic change.
+
+This is a REBUTTAL round. You have just read Team Support's counter-argument claiming the
+word's meaning has shifted. Your job is to:
+1. Directly address and refute the weakest points in their argument.
+2. Reinforce your stability evidence with new angles or additional detail.
+3. Demonstrate that any apparent shift is situational polysemy, not diachronic change.
+
+Be direct, adversarial, and cite corpus evidence."""
+
+_REBUTTAL_REFUSE_USER = """Debate round {current_round} of {num_rounds}.
+Word: "{word}" (used as a {word_type}) — {t_old} vs {t_new}
+
+--- CORPUS EVIDENCE ---
+SENTENCES FROM {t_old}:
+{sentences_old}
+
+SENTENCES FROM {t_new}:
+{sentences_new}
+
+--- TEAM SUPPORT'S LATEST ARGUMENT (what you must rebut) ---
+{arg_change}
+
+Write your rebuttal Arg_stable, directly countering Team Support's claims above."""
+
+
+def rebuttal_support_node(state: GraphState) -> dict:
+    """Multi-round: Team Support rebuttal — reads opponent's arg_stable, writes new arg_change."""
+    llm = _get_llm()
+    sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
+    sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
+
+    current_round = state.get("current_round", 1)
+    num_rounds = state.get("num_rounds", 1)
+
+    response = llm.invoke(
+        [
+            SystemMessage(content=_REBUTTAL_SUPPORT_SYSTEM),
+            HumanMessage(
+                content=_REBUTTAL_SUPPORT_USER.format(
+                    current_round=current_round,
+                    num_rounds=num_rounds,
+                    word=state["word"],
+                    word_type=state.get("word_type", "word"),
+                    t_old=state["t_old"],
+                    t_new=state["t_new"],
+                    sentences_old=sentences_old,
+                    sentences_new=sentences_new,
+                    arg_stable=state.get("arg_stable", ""),
+                )
+            ),
+        ]
+    )
+    new_arg_change = response.content
+    # Append this round's Support argument to the history (keyed for this round).
+    history = list(state.get("debate_history", []))
+    # Start a new round entry; refuse will complete it.
+    history.append({"round": current_round, "arg_change": new_arg_change, "arg_stable": ""})
+    return {"arg_change": new_arg_change, "debate_history": history}
+
+
+def rebuttal_refuse_node(state: GraphState) -> dict:
+    """Multi-round: Team Refuse rebuttal — reads opponent's arg_change, writes new arg_stable."""
+    llm = _get_llm()
+    sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
+    sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
+
+    current_round = state.get("current_round", 1)
+    num_rounds = state.get("num_rounds", 1)
+
+    response = llm.invoke(
+        [
+            SystemMessage(content=_REBUTTAL_REFUSE_SYSTEM),
+            HumanMessage(
+                content=_REBUTTAL_REFUSE_USER.format(
+                    current_round=current_round,
+                    num_rounds=num_rounds,
+                    word=state["word"],
+                    word_type=state.get("word_type", "word"),
+                    t_old=state["t_old"],
+                    t_new=state["t_new"],
+                    sentences_old=sentences_old,
+                    sentences_new=sentences_new,
+                    arg_change=state.get("arg_change", ""),
+                )
+            ),
+        ]
+    )
+    new_arg_stable = response.content
+
+    # Complete the current round entry in history.
+    history = list(state.get("debate_history", []))
+    if history and history[-1]["round"] == current_round:
+        history[-1]["arg_stable"] = new_arg_stable
+    else:
+        history.append({"round": current_round, "arg_change": state.get("arg_change", ""), "arg_stable": new_arg_stable})
+
+    return {
+        "arg_stable": new_arg_stable,
+        "debate_history": history,
+        "current_round": current_round + 1,
+    }
+
+
+def should_continue(state: GraphState) -> str:
+    """Conditional router: loop for another rebuttal round, or exit to judge.
+
+    Returns
+    -------
+    "rebuttal_support"  – if more rounds remain (current_round <= num_rounds)
+    "judge"             – once all rounds are exhausted
+    """
+    current_round = state.get("current_round", 1)
+    num_rounds = state.get("num_rounds", 1)
+    if current_round <= num_rounds:
+        return "rebuttal_support"
+    return "judge"
