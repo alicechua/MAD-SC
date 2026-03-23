@@ -1,0 +1,809 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MAD-SC Debate Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<style>
+  :root {
+    --bg:       #111216;
+    --panel:    #18191f;
+    --border:   #2a2b35;
+    --muted:    #9294a5;
+    --text:     #e8e9f0;
+    --support:  #3b82f6;
+    --support-bg: rgba(59,130,246,.07);
+    --refuse:   #f59e0b;
+    --refuse-bg: rgba(245,158,11,.07);
+    --change:   #ef4444;
+    --stable:   #22c55e;
+    --judge:    #a855f7;
+    --judge-bg: rgba(168,85,247,.08);
+    --radius:   10px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 14px;
+    height: 100vh;
+    display: flex;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ── */
+  #sidebar {
+    width: 220px;
+    min-width: 220px;
+    background: var(--panel);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #sidebar-header {
+    padding: 18px 14px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  #sidebar-header h1 {
+    font-family: 'Playfair Display', serif;
+    font-size: 16px;
+    font-weight: 900;
+    letter-spacing: .03em;
+    line-height: 1.2;
+    color: var(--text);
+  }
+  #sidebar-header p {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  #filter-bar {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+  }
+  .filter-btn {
+    flex: 1;
+    padding: 4px 0;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    transition: all .15s;
+  }
+  .filter-btn:hover { border-color: var(--text); color: var(--text); }
+  .filter-btn.active { background: var(--border); color: var(--text); }
+
+  #word-list {
+    overflow-y: auto;
+    flex: 1;
+    padding: 6px 0;
+  }
+  #word-list::-webkit-scrollbar { width: 4px; }
+  #word-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .word-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    cursor: pointer;
+    border-left: 2px solid transparent;
+    transition: background .1s, border-color .1s;
+  }
+  .word-item:hover { background: rgba(255,255,255,.04); }
+  .word-item.active {
+    background: rgba(255,255,255,.06);
+    border-left-color: var(--support);
+  }
+  .word-label {
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .word-badge {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    padding: 2px 5px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    margin-left: 6px;
+  }
+  .badge-change { background: rgba(239,68,68,.18); color: var(--change); }
+  .badge-stable { background: rgba(34,197,94,.18); color: var(--stable); }
+  .badge-none   { background: rgba(148,149,165,.12); color: var(--muted); }
+
+  /* ── Main ── */
+  #main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #word-header {
+    padding: 18px 28px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: flex-start;
+    gap: 20px;
+  }
+  #word-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 26px;
+    font-weight: 900;
+    letter-spacing: .02em;
+  }
+  #word-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-top: 6px;
+  }
+  .meta-chip {
+    font-size: 11px;
+    color: var(--muted);
+    background: rgba(255,255,255,.05);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 2px 8px;
+  }
+  #verdict-chip {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .06em;
+    padding: 3px 10px;
+    border-radius: 6px;
+    margin-left: auto;
+    align-self: center;
+    white-space: nowrap;
+  }
+  .vc-change { background: rgba(239,68,68,.18); color: var(--change); border: 1px solid rgba(239,68,68,.3); }
+  .vc-stable { background: rgba(34,197,94,.18); color: var(--stable); border: 1px solid rgba(34,197,94,.3); }
+
+  /* ── Tabs ── */
+  #tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    padding: 0 20px;
+    gap: 4px;
+  }
+  .tab {
+    padding: 10px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color .15s, border-color .15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--support); }
+
+  /* ── Content ── */
+  #content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 0;
+  }
+  #content::-webkit-scrollbar { width: 5px; }
+  #content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  .tab-pane { display: none; }
+  .tab-pane.active { display: block; }
+
+  /* ── Debate thread ── */
+  #debate-pane { padding: 24px 28px; }
+
+  .round-block {
+    margin-bottom: 36px;
+    animation: fadeIn .3s ease both;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .round-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .round-label-text {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .round-line {
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+
+  .debate-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+
+  .arg-card {
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    border: 1px solid var(--border);
+    position: relative;
+    overflow: hidden;
+  }
+  .arg-card::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    opacity: .5;
+    pointer-events: none;
+  }
+
+  .arg-card.support {
+    background: var(--support-bg);
+    border-color: rgba(59,130,246,.2);
+  }
+  .arg-card.refuse {
+    background: var(--refuse-bg);
+    border-color: rgba(245,158,11,.2);
+  }
+
+  .arg-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .team-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .support .team-dot { background: var(--support); }
+  .refuse  .team-dot { background: var(--refuse); }
+
+  .team-name {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+  .support .team-name { color: var(--support); }
+  .refuse  .team-name { color: var(--refuse); }
+
+  .arg-body {
+    font-size: 13px;
+    line-height: 1.65;
+    color: #d0d1dc;
+  }
+  .arg-body h1, .arg-body h2, .arg-body h3, .arg-body h4 {
+    font-family: 'Playfair Display', serif;
+    font-size: 14px;
+    font-weight: 700;
+    margin: 14px 0 6px;
+    color: var(--text);
+  }
+  .arg-body h3:first-child, .arg-body h4:first-child { margin-top: 0; }
+  .arg-body p { margin-bottom: 8px; }
+  .arg-body ul, .arg-body ol { margin: 8px 0 8px 18px; }
+  .arg-body li { margin-bottom: 4px; }
+  .arg-body strong { color: var(--text); font-weight: 600; }
+  .arg-body em { font-style: italic; color: #b8b9cc; }
+  .arg-body blockquote {
+    border-left: 3px solid var(--border);
+    padding-left: 12px;
+    margin: 8px 0;
+    color: var(--muted);
+  }
+
+  /* ── Judge verdict ── */
+  #judge-section {
+    margin-top: 8px;
+    margin-bottom: 28px;
+  }
+  .judge-card {
+    background: var(--judge-bg);
+    border: 1px solid rgba(168,85,247,.25);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+  }
+  .judge-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .judge-icon {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    background: rgba(168,85,247,.2);
+    border: 1px solid rgba(168,85,247,.4);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px;
+  }
+  .judge-title {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--judge);
+  }
+  .judge-verdict-pill {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    padding: 4px 12px;
+    border-radius: 6px;
+  }
+  .judge-body {
+    font-size: 13px;
+    line-height: 1.65;
+    color: #c8c9d8;
+  }
+  .judge-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(168,85,247,.12);
+  }
+  .judge-tag {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 5px;
+    background: rgba(168,85,247,.1);
+    color: #c084fc;
+    border: 1px solid rgba(168,85,247,.2);
+  }
+
+  /* ── Corpus pane ── */
+  #corpus-pane {
+    padding: 24px 28px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    align-items: start;
+  }
+  .corpus-block h3 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .corpus-block h3 span {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--support);
+  }
+  .corpus-block:last-child h3 span { background: var(--refuse); }
+  .sentence-item {
+    background: rgba(255,255,255,.03);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #b0b1c2;
+    margin-bottom: 8px;
+  }
+
+  /* ── Placeholder ── */
+  #placeholder {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    gap: 10px;
+  }
+  #placeholder .icon { font-size: 40px; }
+  #placeholder p { font-size: 13px; }
+
+  /* ── Loading ── */
+  #loading {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 12px;
+    z-index: 100;
+  }
+  .spinner {
+    width: 32px; height: 32px;
+    border: 3px solid var(--border);
+    border-top-color: var(--support);
+    border-radius: 50%;
+    animation: spin .6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ── Collapsed args ── */
+  .arg-body.collapsed { max-height: 120px; overflow: hidden; position: relative; }
+  .arg-body.collapsed::after {
+    content: '';
+    position: absolute; bottom: 0; left: 0; right: 0;
+    height: 50px;
+    background: linear-gradient(transparent, var(--support-bg));
+  }
+  .refuse .arg-body.collapsed::after { background: linear-gradient(transparent, var(--refuse-bg)); }
+  .expand-btn {
+    font-size: 11px;
+    color: var(--muted);
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 10px;
+    cursor: pointer;
+    margin-top: 8px;
+    font-family: inherit;
+    transition: color .15s, border-color .15s;
+  }
+  .expand-btn:hover { color: var(--text); border-color: var(--text); }
+</style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <p style="color:var(--muted);font-family:'IBM Plex Sans',sans-serif;font-size:13px">Loading debate logs…</p>
+</div>
+
+<!-- Sidebar -->
+<div id="sidebar">
+  <div id="sidebar-header">
+    <h1>MAD-SC<br>Debate Viewer</h1>
+    <p id="stats-line">Loading…</p>
+  </div>
+  <div id="filter-bar">
+    <button class="filter-btn active" data-filter="all">All</button>
+    <button class="filter-btn" data-filter="change">Change</button>
+    <button class="filter-btn" data-filter="stable">Stable</button>
+  </div>
+  <div id="word-list"></div>
+</div>
+
+<!-- Main panel -->
+<div id="main">
+  <div id="placeholder">
+    <div class="icon">⚖️</div>
+    <p>Select a word to view its debate</p>
+  </div>
+
+  <div id="word-view" style="display:none; flex:1; overflow:hidden; flex-direction:column;">
+    <div id="word-header">
+      <div style="flex:1">
+        <div id="word-title"></div>
+        <div id="word-meta"></div>
+      </div>
+      <div id="verdict-chip"></div>
+    </div>
+
+    <div id="tabs">
+      <div class="tab active" data-tab="debate">Debate Rounds</div>
+      <div class="tab" data-tab="corpus">Corpus Sentences</div>
+    </div>
+
+    <div id="content">
+      <div class="tab-pane active" id="debate-pane"></div>
+      <div class="tab-pane" id="corpus-pane"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let allData = {};
+let currentFilter = 'all';
+
+// ── Helpers ──────────────────────────────────────────────────
+
+function getText(arg) {
+  if (!arg) return '';
+  if (typeof arg === 'string') return arg;
+  if (Array.isArray(arg)) return arg.map(a => a.text || '').join('\n');
+  if (arg.text) return arg.text;
+  return '';
+}
+
+function md(text) {
+  if (!text) return '';
+  return marked.parse(text, { breaks: true });
+}
+
+function verdictClass(v) {
+  if (!v) return 'badge-none';
+  return v.includes('CHANGE') ? 'badge-change' : 'badge-stable';
+}
+function verdictLabel(v) {
+  if (!v) return '—';
+  return v.includes('CHANGE') ? 'CHANGE' : 'STABLE';
+}
+
+// ── Sidebar ──────────────────────────────────────────────────
+
+function buildSidebar(data) {
+  const words = Object.keys(data);
+  const total = words.length;
+  const changed = words.filter(w => {
+    const v = data[w].verdict;
+    return v && v.includes('CHANGE');
+  }).length;
+  document.getElementById('stats-line').textContent =
+    `${total} words · ${changed} changed · ${total - changed} stable`;
+
+  renderWordList(data, currentFilter);
+
+  document.querySelectorAll('.filter-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentFilter = btn.dataset.filter;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderWordList(data, currentFilter);
+    });
+  });
+}
+
+function renderWordList(data, filter) {
+  const list = document.getElementById('word-list');
+  list.innerHTML = '';
+  const words = Object.keys(data).filter(w => {
+    if (filter === 'all') return true;
+    const v = data[w].verdict;
+    if (filter === 'change') return v && v.includes('CHANGE');
+    if (filter === 'stable') return v && !v.includes('CHANGE');
+    return true;
+  });
+
+  words.forEach(word => {
+    const entry = data[word];
+    const v = entry.verdict;
+    const label = verdictLabel(v);
+    const cls   = verdictClass(v);
+
+    const item = document.createElement('div');
+    item.className = 'word-item';
+    item.dataset.word = word;
+    item.innerHTML = `
+      <span class="word-label">${word.replace(/_/g, '_<wbr>')}</span>
+      <span class="word-badge ${cls}">${label}</span>
+    `;
+    item.addEventListener('click', () => selectWord(word));
+    list.appendChild(item);
+  });
+}
+
+// ── Word view ────────────────────────────────────────────────
+
+function selectWord(word) {
+  document.querySelectorAll('.word-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.word === word);
+  });
+
+  const entry = allData[word];
+  document.getElementById('placeholder').style.display = 'none';
+  const view = document.getElementById('word-view');
+  view.style.display = 'flex';
+
+  // Header
+  document.getElementById('word-title').textContent = word;
+  const v = entry.verdict;
+  const vc = document.getElementById('verdict-chip');
+  vc.textContent = v || '—';
+  vc.className = 'vc-' + (v && v.includes('CHANGE') ? 'change' : 'stable');
+
+  const mode = entry.debate_mode || 'single_round';
+  const rounds = entry.num_rounds || 1;
+  const model = entry.model || '';
+  const backend = entry.backend || '';
+  const ts = entry.timestamp ? new Date(entry.timestamp).toLocaleString() : '';
+
+  document.getElementById('word-meta').innerHTML = `
+    <span class="meta-chip">${entry.word_type || 'noun'}</span>
+    <span class="meta-chip">${mode.replace('_', ' ')}</span>
+    <span class="meta-chip">${rounds} rounds</span>
+    ${model ? `<span class="meta-chip">${model}</span>` : ''}
+    ${ts ? `<span class="meta-chip">${ts}</span>` : ''}
+  `;
+
+  // Reset to debate tab
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+  document.querySelector('.tab[data-tab="debate"]').classList.add('active');
+  document.getElementById('debate-pane').classList.add('active');
+
+  buildDebatePan(entry);
+  buildCorpusPane(entry);
+}
+
+function buildDebatePan(entry) {
+  const pane = document.getElementById('debate-pane');
+  pane.innerHTML = '';
+
+  const history = entry.debate_history || [];
+
+  if (history.length === 0) {
+    // Single-round: use top-level arg_change / arg_stable
+    const block = makeRoundBlock(0, 0,
+      getText(entry.arg_change),
+      getText(entry.arg_stable)
+    );
+    pane.appendChild(block);
+  } else {
+    const total = history.length;
+    history.forEach((round, i) => {
+      const block = makeRoundBlock(
+        round.round,
+        i,
+        getText(round.arg_change),
+        getText(round.arg_stable),
+        total
+      );
+      pane.appendChild(block);
+    });
+  }
+
+  // Judge verdict
+  const section = document.createElement('div');
+  section.id = 'judge-section';
+  section.innerHTML = makeJudgeCard(entry);
+  pane.appendChild(section);
+}
+
+function makeRoundBlock(roundNum, idx, argChange, argStable, totalRounds) {
+  const isOpening = roundNum === 0;
+  const label = isOpening
+    ? 'Opening Statements'
+    : `Rebuttal — Round ${roundNum}${totalRounds ? ' / ' + totalRounds : ''}`;
+
+  const div = document.createElement('div');
+  div.className = 'round-block';
+  div.style.animationDelay = `${idx * 60}ms`;
+
+  div.innerHTML = `
+    <div class="round-label">
+      <span class="round-label-text">${label}</span>
+      <div class="round-line"></div>
+    </div>
+    <div class="debate-columns">
+      <div class="arg-card support">
+        <div class="arg-header">
+          <span class="team-dot"></span>
+          <span class="team-name">Team Support</span>
+          <span style="font-size:10px;color:var(--muted);margin-left:auto">argues for change</span>
+        </div>
+        <div class="arg-body collapsed" data-full="${encodeURIComponent(argChange)}">${md(argChange)}</div>
+        <button class="expand-btn">Show more ↓</button>
+      </div>
+      <div class="arg-card refuse">
+        <div class="arg-header">
+          <span class="team-dot"></span>
+          <span class="team-name">Team Refuse</span>
+          <span style="font-size:10px;color:var(--muted);margin-left:auto">argues for stability</span>
+        </div>
+        <div class="arg-body collapsed" data-full="${encodeURIComponent(argStable)}">${md(argStable)}</div>
+        <button class="expand-btn">Show more ↓</button>
+      </div>
+    </div>
+  `;
+
+  div.querySelectorAll('.expand-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const body = btn.previousElementSibling;
+      const expanded = !body.classList.contains('collapsed');
+      body.classList.toggle('collapsed', expanded);
+      btn.textContent = expanded ? 'Show more ↓' : 'Show less ↑';
+    });
+  });
+
+  return div;
+}
+
+function makeJudgeCard(entry) {
+  const v = entry.verdict;
+  const isChange = v && v.includes('CHANGE');
+  const pillClass = isChange ? 'vc-change' : 'vc-stable';
+
+  const tags = [];
+  if (entry.change_type) tags.push(entry.change_type);
+  if (entry.causal_driver) tags.push(entry.causal_driver);
+  if (entry.break_point_year) tags.push(`Break-point: ~${entry.break_point_year}`);
+
+  return `
+    <div class="round-label">
+      <span class="round-label-text">Judge Verdict</span>
+      <div class="round-line"></div>
+    </div>
+    <div class="judge-card">
+      <div class="judge-header">
+        <div class="judge-icon">⚖️</div>
+        <span class="judge-title">LLM Judge</span>
+        <div class="judge-verdict-pill ${pillClass}">${v || '—'}</div>
+      </div>
+      <div class="judge-body">${entry.reasoning || '<em style="color:var(--muted)">No reasoning available.</em>'}</div>
+      ${tags.length ? `<div class="judge-meta">${tags.map(t => `<span class="judge-tag">${t}</span>`).join('')}</div>` : ''}
+    </div>
+  `;
+}
+
+function buildCorpusPane(entry) {
+  const pane = document.getElementById('corpus-pane');
+  pane.innerHTML = `
+    <div class="corpus-block">
+      <h3><span></span>${entry.t_old || 'Corpus 1'}</h3>
+      ${(entry.sentences_old || []).map(s =>
+        `<div class="sentence-item">${escapeHtml(s)}</div>`
+      ).join('')}
+    </div>
+    <div class="corpus-block">
+      <h3><span></span>${entry.t_new || 'Corpus 2'}</h3>
+      ${(entry.sentences_new || []).map(s =>
+        `<div class="sentence-item">${escapeHtml(s)}</div>`
+      ).join('')}
+    </div>
+  `;
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Tabs ─────────────────────────────────────────────────────
+
+document.querySelectorAll('.tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.tab + '-pane').classList.add('active');
+  });
+});
+
+// ── Boot ─────────────────────────────────────────────────────
+
+fetch('./debate_logs.json')
+  .then(r => r.json())
+  .then(data => {
+    allData = data;
+    buildSidebar(data);
+    document.getElementById('loading').style.display = 'none';
+    // Auto-select first word
+    const first = Object.keys(data)[0];
+    if (first) selectWord(first);
+  })
+  .catch(err => {
+    document.getElementById('loading').innerHTML =
+      `<p style="color:#ef4444;font-family:'IBM Plex Sans',sans-serif">Failed to load debate_logs.json:<br>${err}</p>`;
+  });
+</script>
+</body>
+</html>
