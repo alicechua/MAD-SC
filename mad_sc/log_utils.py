@@ -123,6 +123,9 @@ def append_debate_log(
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "debate_mode": debate_mode,
         "num_rounds": num_rounds,
+        # ── Tool calls made by each team agent ────────────────────────────
+        "tool_calls_support": state.get("tool_calls_support") or [],
+        "tool_calls_refuse": state.get("tool_calls_refuse") or [],
         # ── Multi-round full transcript (empty list for single-round) ─────
         "debate_history": state.get("debate_history", []),
         **_get_backend_info(),

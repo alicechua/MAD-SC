@@ -14,13 +14,67 @@ import time
 
 from typing import Any
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from typing import Literal
 
 from mad_sc.etymology import fetch_etymology_context, format_etymology_context_for_prompt
 from mad_sc.state import EtymologyResult, GraphState, JudgeVerdict
+from mad_sc.tools import ngram_frequency, wikipedia_search, wordnet_query
+
+TEAM_TOOLS = [wikipedia_search, wordnet_query, ngram_frequency]
+
+_TOOL_DISPATCH = {
+    "wikipedia_search": wikipedia_search,
+    "wordnet_query": wordnet_query,
+    "ngram_frequency": ngram_frequency,
+}
+
+
+def _run_tool(tool_call: dict) -> str:
+    """Execute a single tool call and return its string result."""
+    fn = _TOOL_DISPATCH.get(tool_call["name"])
+    if fn is None:
+        return f"Unknown tool: {tool_call['name']}"
+    try:
+        return fn.invoke(tool_call["args"])
+    except Exception as e:
+        return f"Tool error ({tool_call['name']}): {e}"
+
+
+def _tool_loop(llm_with_tools, messages, max_rounds: int = 5, agent_tag: str = "AGENT"):
+    """Run an LLM + tool-calling loop until the model stops requesting tools.
+
+    Returns the final AIMessage (no tool_calls) after executing any
+    intermediate tool calls and feeding results back as ToolMessages.
+    Caps at *max_rounds* tool-call rounds to prevent runaway loops.
+
+    Logs each tool call and its result to stdout using the bracketed tag format
+    (e.g. ``[TEAM-SUPPORT] wikipedia_search('streaming media') → 312 chars``).
+    Returns a ``_tool_calls`` attribute on the response containing a list of
+    ``{"tool": name, "args": args, "result": result}`` dicts for downstream logging.
+    """
+    all_tool_calls: list[dict] = []
+
+    for _ in range(max_rounds):
+        response = _robust_invoke(llm_with_tools, messages)
+        tool_calls = getattr(response, "tool_calls", None)
+        if not tool_calls:
+            response._tool_calls = all_tool_calls
+            return response
+        messages.append(response)
+        for tc in tool_calls:
+            result = _run_tool(tc)
+            args_repr = ", ".join(f"{k}={v!r}" for k, v in tc["args"].items())
+            print(f"[{agent_tag}] {tc['name']}({args_repr}) → {len(result)} chars")
+            all_tool_calls.append({"tool": tc["name"], "args": tc["args"], "result": result})
+            messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+
+    # Final call after exhausting rounds
+    response = _robust_invoke(llm_with_tools, messages)
+    response._tool_calls = all_tool_calls
+    return response
 
 load_dotenv()
 
@@ -439,7 +493,17 @@ Requirements
    - **Cultural Shift**: driven by broad societal, technological, or cultural changes.
    - **Linguistic Drift**: driven by internal linguistic processes (metaphor, metonymy, analogy).
 
-Be specific, cite corpus evidence directly, and construct a compelling argument."""
+Be specific, cite corpus evidence directly, and construct a compelling argument.
+
+Available Tools
+---------------
+- wikipedia_search(query): Look up historical context for cultural or technological events \
+that may have driven a causal shift (e.g. "history of streaming media").
+- wordnet_query(word, pos): Retrieve hypernyms and hyponyms to classify Generalization or \
+Specialization (e.g. show the word's hypernym class broadened or narrowed).
+- ngram_frequency(word, start_year, end_year): Check Google Books frequency trends to \
+demonstrate when a new sense spiked in the written record.
+Use these tools strategically before or while building your argument."""
 
 _SUPPORT_USER = """Analyze the semantic change of the word: "{word}" (used as a {word_type})
 
@@ -458,6 +522,7 @@ Ellipsis / Antiphrasis / Auto-Antonym / Synecdoche), and identify the Causal Dri
 def team_support_node(state: GraphState) -> dict:
     """Team Support: constructs Arg_change arguing for semantic shift."""
     llm = _get_llm()
+    llm_with_tools = llm.bind_tools(TEAM_TOOLS)
 
     sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
     sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
@@ -466,23 +531,21 @@ def team_support_node(state: GraphState) -> dict:
     dossier = state.get("lexicographer_dossier", "") or ""
     system_content = f"{dossier}\n\n{_SUPPORT_SYSTEM}" if dossier else _SUPPORT_SYSTEM
 
-    response = _robust_invoke(
-        llm,
-        [
-            SystemMessage(content=system_content),
-            HumanMessage(
-                content=_SUPPORT_USER.format(
-                    word=state["word"],
-                    word_type=state.get("word_type", "word"),
-                    t_old=state["t_old"],
-                    t_new=state["t_new"],
-                    sentences_old=sentences_old,
-                    sentences_new=sentences_new,
-                )
-            ),
-        ]
-    )
-    return {"arg_change": _extract_text(response)}
+    messages = [
+        SystemMessage(content=system_content),
+        HumanMessage(
+            content=_SUPPORT_USER.format(
+                word=state["word"],
+                word_type=state.get("word_type", "word"),
+                t_old=state["t_old"],
+                t_new=state["t_new"],
+                sentences_old=sentences_old,
+                sentences_new=sentences_new,
+            )
+        ),
+    ]
+    response = _tool_loop(llm_with_tools, messages, agent_tag="TEAM-SUPPORT")
+    return {"arg_change": _extract_text(response), "tool_calls_support": getattr(response, "_tool_calls", [])}
 
 
 # ---------------------------------------------------------------------------
@@ -504,7 +567,17 @@ Requirements
 3. Demonstrate continuity of the word's primary prototypical meaning across periods.
 4. Pre-emptively counter broadening/narrowing/transfer claims by showing stable semantic features.
 
-Be specific, cite corpus evidence directly, and construct a compelling argument."""
+Be specific, cite corpus evidence directly, and construct a compelling argument.
+
+Available Tools
+---------------
+- wikipedia_search(query): Look up historical context to show that apparent new usages \
+are merely situational responses to events, not genuine semantic change.
+- wordnet_query(word, pos): Retrieve the word's stable hypernym class and hyponyms to \
+show its core semantic features have not shifted.
+- ngram_frequency(word, start_year, end_year): Check Google Books frequency trends to \
+demonstrate overall usage stability or that any spike was short-lived.
+Use these tools strategically before or while building your argument."""
 
 _REFUSE_USER = """Analyze the semantic stability of the word: "{word}" (used as a {word_type})
 
@@ -522,6 +595,7 @@ that any new usages are situational polysemy rather than true diachronic change.
 def team_refuse_node(state: GraphState) -> dict:
     """Team Refuse: constructs Arg_stable arguing for semantic stability."""
     llm = _get_llm()
+    llm_with_tools = llm.bind_tools(TEAM_TOOLS)
 
     sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
     sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
@@ -530,23 +604,21 @@ def team_refuse_node(state: GraphState) -> dict:
     dossier = state.get("lexicographer_dossier", "") or ""
     system_content = f"{dossier}\n\n{_REFUSE_SYSTEM}" if dossier else _REFUSE_SYSTEM
 
-    response = _robust_invoke(
-        llm,
-        [
-            SystemMessage(content=system_content),
-            HumanMessage(
-                content=_REFUSE_USER.format(
-                    word=state["word"],
-                    word_type=state.get("word_type", "word"),
-                    t_old=state["t_old"],
-                    t_new=state["t_new"],
-                    sentences_old=sentences_old,
-                    sentences_new=sentences_new,
-                )
-            ),
-        ]
-    )
-    return {"arg_stable": _extract_text(response)}
+    messages = [
+        SystemMessage(content=system_content),
+        HumanMessage(
+            content=_REFUSE_USER.format(
+                word=state["word"],
+                word_type=state.get("word_type", "word"),
+                t_old=state["t_old"],
+                t_new=state["t_new"],
+                sentences_old=sentences_old,
+                sentences_new=sentences_new,
+            )
+        ),
+    ]
+    response = _tool_loop(llm_with_tools, messages, agent_tag="TEAM-REFUSE")
+    return {"arg_stable": _extract_text(response), "tool_calls_refuse": getattr(response, "_tool_calls", [])}
 
 
 # ---------------------------------------------------------------------------

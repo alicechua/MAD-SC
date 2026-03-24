@@ -197,6 +197,8 @@ class GraphState(TypedDict):
     # --- Debate outputs (populated by parallel Team nodes) ---
     arg_change: str            # Latest argument for semantic change (Team Support)
     arg_stable: str            # Latest argument for semantic stability (Team Refuse)
+    tool_calls_support: Optional[List[dict]]  # Tool calls made by Team Support [{tool, args, result}, ...]
+    tool_calls_refuse: Optional[List[dict]]   # Tool calls made by Team Refuse [{tool, args, result}, ...]
 
     # --- Multi-round rebuttal fields (unused in single-round mode) ---
     num_rounds: int            # Total number of rebuttal rounds requested (default 1)
