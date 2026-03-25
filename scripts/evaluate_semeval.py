@@ -150,9 +150,9 @@ def main():
         max_retries = 10
         pred_label = 0
         
-        # Proactively sleep 15 seconds per word to avoid 15 RPM limit 
-        # (each graph run is ~3 LLM calls)
-        time.sleep(15)
+        # Proactively sleep 30 seconds per word to avoid 15 RPM limit 
+        # (multi-round debates make many LLM calls per word)
+        time.sleep(30)
         
         for attempt in range(max_retries):
             try:
@@ -223,6 +223,13 @@ def main():
     with open(debate_logs_file, "w") as f:
         json.dump(debate_logs, f, indent=2)
     print(f"Debate transcripts saved to {debate_logs_file}")
+    
+    try:
+        from scripts.export_to_markdown import export_debate_to_md
+        md_file = out_dir / f"debate_logs_{run_ts}.md"
+        export_debate_to_md(str(debate_logs_file), str(md_file))
+    except Exception as e:
+        print(f"Could not export Markdown: {e}")
     
     # Save results
     with open(results_file, "w") as f:
