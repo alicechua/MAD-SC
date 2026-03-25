@@ -213,25 +213,47 @@ def run_pipeline_for_word(
         "verdict": None,
     }
 
-    try:
-        result = graph.invoke(initial_state)
-        return result
-    except Exception as exc:
-        log.error("  Pipeline failed for '%s': %s", word, exc)
-        traceback.print_exc()
-        return {
+    max_retries = 10
+    for attempt in range(max_retries):
+        try:
+            result = graph.invoke(initial_state)
+            return result
+        except Exception as exc:
+            err_str = str(exc)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                log.warning("  Rate limit hit for '%s', sleeping 60s… (attempt %d/%d)",
+                            word, attempt + 1, max_retries)
+                time.sleep(60)
+            else:
+                log.error("  Pipeline failed for '%s': %s", word, exc)
+                traceback.print_exc()
+                return {
+                    "word": word,
+                    "arg_change": f"ERROR: {exc}",
+                    "arg_stable": f"ERROR: {exc}",
+                    "verdict": {
+                        "word": word,
+                        "verdict": "ERROR",
+                        "change_type": None,
+                        "causal_driver": None,
+                        "break_point_year": None,
+                        "reasoning": f"Pipeline error: {exc}",
+                    },
+                }
+    log.error("  '%s' failed after %d retries (rate limit).", word, max_retries)
+    return {
+        "word": word,
+        "arg_change": "ERROR: rate limit",
+        "arg_stable": "ERROR: rate limit",
+        "verdict": {
             "word": word,
-            "arg_change": f"ERROR: {exc}",
-            "arg_stable": f"ERROR: {exc}",
-            "verdict": {
-                "word": word,
-                "verdict": "ERROR",
-                "change_type": None,
-                "causal_driver": None,
-                "break_point_year": None,
-                "reasoning": f"Pipeline error: {exc}",
-            },
-        }
+            "verdict": "ERROR",
+            "change_type": None,
+            "causal_driver": None,
+            "break_point_year": None,
+            "reasoning": f"Rate limit: exhausted {max_retries} retries.",
+        },
+    }
 
 
 def extract_predicted_type(result: dict) -> Optional[str]:

@@ -70,6 +70,34 @@ def main():
         metavar="DIR",
         help="Directory to write output files (default: current working directory)",
     )
+    grounding_group = parser.add_mutually_exclusive_group()
+    grounding_group.add_argument(
+        "--grounding",
+        dest="use_grounding",
+        action="store_true",
+        default=None,
+        help="Enable pre-debate BERT grounding (SED/TD). Overrides USE_GROUNDING env var.",
+    )
+    grounding_group.add_argument(
+        "--no-grounding",
+        dest="use_grounding",
+        action="store_false",
+        help="Disable pre-debate BERT grounding. Overrides USE_GROUNDING env var.",
+    )
+    lex_group = parser.add_mutually_exclusive_group()
+    lex_group.add_argument(
+        "--lexicographer",
+        dest="use_lexicographer",
+        action="store_true",
+        default=None,
+        help="Enable Lexicographer Agent (Definition Dossier). Overrides USE_LEXICOGRAPHER env var.",
+    )
+    lex_group.add_argument(
+        "--no-lexicographer",
+        dest="use_lexicographer",
+        action="store_false",
+        help="Disable Lexicographer Agent. Overrides USE_LEXICOGRAPHER env var.",
+    )
     args = parser.parse_args()
 
     # Set before importing data_loader so the env var is picked up correctly.
@@ -92,10 +120,15 @@ def main():
 
     mode = args.mode
     num_rounds = max(1, args.rounds)
+    graph_kwargs = {}
+    if args.use_grounding is not None:
+        graph_kwargs["use_grounding"] = args.use_grounding
+    if args.use_lexicographer is not None:
+        graph_kwargs["use_lexicographer"] = args.use_lexicographer
     if mode == "multi":
-        graph = compile_multi_round_graph(num_rounds=num_rounds)
+        graph = compile_multi_round_graph(num_rounds=num_rounds, **graph_kwargs)
     else:
-        graph = compile_graph()
+        graph = compile_graph(**graph_kwargs)
 
     mode_label = (
         f"multi-round ({num_rounds} rebuttal round{'s' if num_rounds > 1 else ''})"
