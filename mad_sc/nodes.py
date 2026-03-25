@@ -544,7 +544,11 @@ def team_support_node(state: GraphState) -> dict:
             )
         ),
     ]
-    response = _tool_loop(llm_with_tools, messages, agent_tag="TEAM-SUPPORT")
+    if os.getenv("USE_TOOLS", "true").lower() == "false":
+        response = _robust_invoke(llm, messages)
+        response._tool_calls = []
+    else:
+        response = _tool_loop(llm_with_tools, messages, agent_tag="TEAM-SUPPORT")
     return {"arg_change": _extract_text(response), "tool_calls_support": getattr(response, "_tool_calls", [])}
 
 
@@ -617,7 +621,11 @@ def team_refuse_node(state: GraphState) -> dict:
             )
         ),
     ]
-    response = _tool_loop(llm_with_tools, messages, agent_tag="TEAM-REFUSE")
+    if os.getenv("USE_TOOLS", "true").lower() == "false":
+        response = _robust_invoke(llm, messages)
+        response._tool_calls = []
+    else:
+        response = _tool_loop(llm_with_tools, messages, agent_tag="TEAM-REFUSE")
     return {"arg_stable": _extract_text(response), "tool_calls_refuse": getattr(response, "_tool_calls", [])}
 
 
@@ -703,11 +711,14 @@ Output ONLY valid JSON matching the schema provided.\
 _JUDGE_COARSE_USER = """\
 Evaluate the debate about the word "{word}" ({t_old} vs. {t_new}).
 
---- ARGUMENT FOR CHANGE ---
+--- FINAL ARGUMENT FOR CHANGE (Team Support) ---
 {arg_change}
 
---- ARGUMENT FOR STABILITY ---
+--- FINAL ARGUMENT FOR STABILITY (Team Refuse) ---
 {arg_stable}
+
+If a full debate transcript is provided below, weigh the cumulative strength of \
+evidence across ALL rounds — not just the final arguments above.
 
 Which COARSE category best describes the semantic trajectory? \
 Output ONLY a valid JSON object.\
@@ -876,18 +887,21 @@ object with your final structured verdict. Use the exact JSON schema from your i
 
 def _run_coarse_stage(word: str, t_old: str, t_new: str,
                       arg_change: str, arg_stable: str,
-                      lexicographer_dossier: str = "") -> _CoarseVerdict | None:
+                      lexicographer_dossier: str = "",
+                      debate_history_text: str = "") -> _CoarseVerdict | None:
     """Stage 1: classify into STABLE / Transfer / Broadening / Narrowing."""
     coarse_system = (
         f"{lexicographer_dossier}\n\n{_JUDGE_COARSE_SYSTEM}"
         if lexicographer_dossier else _JUDGE_COARSE_SYSTEM
     )
+    history_section = f"\n\n{debate_history_text}" if debate_history_text else ""
+    user_content = _JUDGE_COARSE_USER.format(
+        word=word, t_old=t_old, t_new=t_new,
+        arg_change=arg_change, arg_stable=arg_stable,
+    ) + history_section
     messages = [
         SystemMessage(content=coarse_system),
-        HumanMessage(content=_JUDGE_COARSE_USER.format(
-            word=word, t_old=t_old, t_new=t_new,
-            arg_change=arg_change, arg_stable=arg_stable,
-        )),
+        HumanMessage(content=user_content),
     ]
     try:
         llm = _get_judge_llm(temperature=0.1).with_structured_output(_CoarseVerdict)
@@ -902,10 +916,7 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
     raw_llm = _get_judge_llm(temperature=0.1)
     messages_raw = [
         SystemMessage(content=coarse_system),
-        HumanMessage(content=_JUDGE_COARSE_USER.format(
-            word=word, t_old=t_old, t_new=t_new,
-            arg_change=arg_change, arg_stable=arg_stable,
-        ) + "\n\nRespond with a JSON object: {\"coarse_category\": \"...\", \"reasoning\": \"...\"}"),
+        HumanMessage(content=user_content + "\n\nRespond with a JSON object: {\"coarse_category\": \"...\", \"reasoning\": \"...\"}"),
     ]
     try:
         resp = _robust_invoke(raw_llm, messages_raw)
@@ -923,19 +934,21 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
 def _run_transfer_stage(word: str, t_old: str, t_new: str,
                         arg_change: str, arg_stable: str,
                         coarse_reasoning: str,
-                        lexicographer_dossier: str = "") -> JudgeVerdict:
+                        lexicographer_dossier: str = "",
+                        debate_history_text: str = "") -> JudgeVerdict:
     """Stage 2: identify exact Transfer mechanism."""
     transfer_system = (
         f"{lexicographer_dossier}\n\n{_JUDGE_TRANSFER_SYSTEM}"
         if lexicographer_dossier else _JUDGE_TRANSFER_SYSTEM
     )
+    history_section = f"\n\n{debate_history_text}" if debate_history_text else ""
     messages = [
         SystemMessage(content=transfer_system),
         HumanMessage(content=_JUDGE_TRANSFER_USER.format(
             word=word, t_old=t_old, t_new=t_new,
             arg_change=arg_change, arg_stable=arg_stable,
             coarse_reasoning=coarse_reasoning,
-        )),
+        ) + history_section),
     ]
     try:
         llm = _get_judge_llm(temperature=0.2).with_structured_output(JudgeVerdict)
@@ -954,6 +967,21 @@ def _run_transfer_stage(word: str, t_old: str, t_new: str,
     return verdict
 
 
+def _format_debate_history(debate_history: list) -> str:
+    """Format the full multi-round debate transcript for the judge."""
+    if not debate_history:
+        return ""
+    lines = ["=== FULL DEBATE TRANSCRIPT (all rounds) ==="]
+    for entry in debate_history:
+        rnd = entry.get("round", "?")
+        label = "Opening" if rnd == 0 else f"Rebuttal Round {rnd}"
+        lines.append(f"\n--- {label} ---")
+        lines.append(f"[Team Support]\n{entry.get('arg_change', '(none)')}")
+        lines.append(f"\n[Team Refuse]\n{entry.get('arg_stable', '(none)')}")
+    lines.append("\n=== END TRANSCRIPT ===")
+    return "\n".join(lines)
+
+
 def judge_node(state: GraphState) -> dict:
     """LLM Judge: two-stage coarse-then-fine verdict.
 
@@ -966,10 +994,12 @@ def judge_node(state: GraphState) -> dict:
     t_old, t_new = state["t_old"], state["t_new"]
     arg_change, arg_stable = state["arg_change"], state["arg_stable"]
     dossier = state.get("lexicographer_dossier", "") or ""
+    debate_history_text = _format_debate_history(state.get("debate_history", []))
 
     # ── Stage 1: Coarse ──────────────────────────────────────────────────────
     coarse = _run_coarse_stage(word, t_old, t_new, arg_change, arg_stable,
-                               lexicographer_dossier=dossier)
+                               lexicographer_dossier=dossier,
+                               debate_history_text=debate_history_text)
 
     if coarse is None or coarse.coarse_category == "STABLE":
         return {"verdict": JudgeVerdict(
@@ -1003,6 +1033,7 @@ def judge_node(state: GraphState) -> dict:
     verdict = _run_transfer_stage(
         word, t_old, t_new, arg_change, arg_stable, coarse.reasoning,
         lexicographer_dossier=dossier,
+        debate_history_text=debate_history_text,
     )
     return {"verdict": verdict.model_dump()}
 
@@ -1018,8 +1049,19 @@ This is a REBUTTAL round. You have just read Team Refuse's counter-argument clai
 word is semantically stable. Your job is to:
 1. Directly address and refute the weakest points in their argument.
 2. Reinforce your strongest evidence with new angles or additional detail.
-3. Name the Change Type (Generalization / Specialization / Co-hyponymous Transfer).
+3. Name the Change Type (pick exactly one from Blank's full taxonomy below).
 4. Name the Causal Driver (Cultural Shift / Linguistic Drift).
+
+Change Type taxonomy (Blank's full taxonomy — pick EXACTLY ONE):
+  Metaphor      – meaning extended via conceptual similarity across domains.
+  Metonymy      – meaning shifted via contiguity or association (part-whole, cause-effect).
+  Analogy       – meaning extended via structural/abstract resemblance across semantic domains.
+  Generalization – scope broadened to cover a wider range of referents.
+  Specialization – scope narrowed to a specific domain or subset.
+  Ellipsis      – compound phrase shortened; meaning inherited by the head noun.
+  Antiphrasis   – meaning shifted to its opposite through ironic/euphemistic usage.
+  Auto-Antonym  – word acquired a sense directly opposite to its original meaning (slang reversal).
+  Synecdoche    – part-for-whole or whole-for-part meaning transfer.
 
 Be direct, adversarial, and cite corpus evidence."""
 
@@ -1046,7 +1088,7 @@ This is a REBUTTAL round. You have just read Team Support's counter-argument cla
 word's meaning has shifted. Your job is to:
 1. Directly address and refute the weakest points in their argument.
 2. Reinforce your stability evidence with new angles or additional detail.
-3. Demonstrate that any apparent shift is situational polysemy, not diachronic change.
+3. Consider whether any apparent shift is situational polysemy rather than genuine diachronic change — and argue this only if the evidence supports it.
 
 Be direct, adversarial, and cite corpus evidence."""
 

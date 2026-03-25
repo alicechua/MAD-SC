@@ -39,6 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from mad_sc.graph import compile_graph  # noqa: E402
+from mad_sc.graph_multi import compile_multi_round_graph  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -471,6 +472,24 @@ def main():
         action="store_false",
         help="Disable Lexicographer Agent. Overrides USE_LEXICOGRAPHER env var.",
     )
+    parser.add_argument(
+        "--no-tools",
+        action="store_true",
+        default=False,
+        help="Disable external tool-calling for team debate agents (sets USE_TOOLS=false).",
+    )
+    parser.add_argument(
+        "--multi-round",
+        action="store_true",
+        default=False,
+        help="Use multi-round rebuttal graph instead of single-round (compile_multi_round_graph).",
+    )
+    parser.add_argument(
+        "--num-rounds",
+        type=int,
+        default=3,
+        help="Number of rebuttal rounds after the opening exchange (default: 3). Only used with --multi-round.",
+    )
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
@@ -493,16 +512,29 @@ def main():
     # ------------------------------------------------------------------
     # 2. Compile pipeline graph
     # ------------------------------------------------------------------
+    if args.no_tools:
+        os.environ["USE_TOOLS"] = "false"
+        log.info("Tool-calling disabled for team agents (USE_TOOLS=false)")
+
     # use_grounding=None means the flag wasn't passed → fall back to compile_graph default
     graph_kwargs = {}
     if args.use_grounding is not None:
         graph_kwargs["use_grounding"] = args.use_grounding
     if args.use_lexicographer is not None:
         graph_kwargs["use_lexicographer"] = args.use_lexicographer
-    log.info("Compiling MAD-SC LangGraph pipeline… (grounding=%s, lexicographer=%s)",
-             graph_kwargs.get("use_grounding", "env/default"),
-             graph_kwargs.get("use_lexicographer", "env/default"))
-    graph = compile_graph(**graph_kwargs)
+    if args.multi_round:
+        log.info(
+            "Compiling MAD-SC multi-round pipeline… (rounds=%d, grounding=%s, lexicographer=%s)",
+            args.num_rounds,
+            graph_kwargs.get("use_grounding", "env/default"),
+            graph_kwargs.get("use_lexicographer", "env/default"),
+        )
+        graph = compile_multi_round_graph(num_rounds=args.num_rounds, **graph_kwargs)
+    else:
+        log.info("Compiling MAD-SC LangGraph pipeline… (grounding=%s, lexicographer=%s)",
+                 graph_kwargs.get("use_grounding", "env/default"),
+                 graph_kwargs.get("use_lexicographer", "env/default"))
+        graph = compile_graph(**graph_kwargs)
 
     # ------------------------------------------------------------------
     # 3. Run pipeline on each word
