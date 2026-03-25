@@ -20,6 +20,7 @@ from mad_sc.data_loader import (
     get_semeval_contexts,
     get_targets,
 )
+from mad_sc.etymology import fetch_etymology_context
 from mad_sc.graph import compile_graph
 from mad_sc.log_utils import append_debate_log
 
@@ -64,8 +65,8 @@ st.set_page_config(
 
 
 @st.cache_resource
-def get_graph():
-    return compile_graph()
+def get_graph(use_grounding: bool, use_lexicographer: bool):
+    return compile_graph(use_grounding=use_grounding, use_lexicographer=use_lexicographer)
 
 
 # ---------------------------------------------------------------------------
@@ -83,14 +84,31 @@ with st.sidebar:
         targets = ["edge_nn", "record_nn", "attack_nn", "plane_nn", "gas_nn"]
         st.warning("targets.txt not found — showing example words.", icon="⚠️")
 
-    word = st.selectbox(
-        "Target word",
+    custom_word = st.text_input(
+        "Or enter any English word",
+        placeholder="e.g. bead, canine, awful…",
+        help="Type any word to analyse it using OED historical + modern quotes as corpus evidence.",
+    )
+
+    word = custom_word.strip().lower() if custom_word.strip() else st.selectbox(
+        "Target word (LSC-CTD / SemEval)",
         options=targets,
-        help="Select from the 37 SemEval-2020 Task 1 English target words.",
+        help="Select from the benchmark words, or type a custom word above.",
     )
 
     max_samples = st.slider(
         "Max sentences per period", min_value=3, max_value=20, value=10, step=1
+    )
+
+    use_grounding = st.toggle(
+        "Pre-debate grounding (BERT)",
+        value=False,
+        help="Run BERT-based SED/TD analysis before the debate and inject quantitative evidence into agent prompts. Slower but adds embedding-distance signal.",
+    )
+    use_lexicographer = st.toggle(
+        "Lexicographer Agent",
+        value=True,
+        help="Run the Lexicographer Agent before the debate to produce a Definition Dossier (historical/modern senses + change mechanism). Anchors teams to etymological ground truth.",
     )
 
     run_btn = st.button("Run Debate", type="primary", use_container_width=True)
@@ -123,22 +141,34 @@ if not run_btn:
 # Step 1 — Load corpus sentences
 # ---------------------------------------------------------------------------
 
-with st.status("Loading SemEval corpus sentences…", expanded=False) as load_status:
+oed_mode = False  # set True when OED quotes are used as corpus sentences
+t_old_label = CORPUS1_LABEL
+t_new_label = CORPUS2_LABEL
+
+with st.status("Loading corpus sentences…", expanded=False) as load_status:
     sentences_old, sentences_new = get_semeval_contexts(word, max_samples=max_samples)
 
     if not sentences_old and not sentences_new:
-        load_status.update(
-            label="No sentences found for this word.", state="error"
-        )
-        st.error(
-            f"No corpus sentences found for **{word}**. "
-            "Check that `data/semeval2020_ulscd_eng/` exists and the word "
-            "appears in the corpus."
-        )
-        st.stop()
+        # Fall back to OED quotes for any arbitrary word.
+        load_status.update(label="No SemEval data — fetching OED quotes…")
+        oed_ctx = fetch_etymology_context(word)
+        if oed_ctx["historical"] or oed_ctx["modern"]:
+            sentences_old = [f"[{yr}] {txt}" for yr, txt in oed_ctx["historical"]]
+            sentences_new = [f"[{yr}] {txt}" for yr, txt in oed_ctx["modern"]]
+            t_old_label = "OED pre-1900 (historical)"
+            t_new_label = "OED post-1900 (modern)"
+            oed_mode = True
+        else:
+            load_status.update(label="No corpus data found.", state="error")
+            st.error(
+                f"No corpus sentences found for **{word}** in SemEval, "
+                "and OED returned no quotes. Check the OED cookie or try another word."
+            )
+            st.stop()
 
     load_status.update(
-        label=f"Loaded {len(sentences_old)} + {len(sentences_new)} sentences.",
+        label=f"Loaded {len(sentences_old)} + {len(sentences_new)} sentences"
+        + (" (OED)" if oed_mode else "") + ".",
         state="complete",
     )
 
@@ -150,7 +180,7 @@ st.markdown("**Retrieved Corpus Sentences**")
 c_old, c_new = st.columns(2)
 
 with c_old:
-    st.caption(f"{CORPUS1_LABEL} — {len(sentences_old)} sentence(s)")
+    st.caption(f"{t_old_label} — {len(sentences_old)} sentence(s)")
     if sentences_old:
         st.markdown(f"- {sentences_old[0]}")
     if len(sentences_old) > 1:
@@ -159,13 +189,20 @@ with c_old:
                 st.markdown(f"- {s}")
 
 with c_new:
-    st.caption(f"{CORPUS2_LABEL} — {len(sentences_new)} sentence(s)")
+    st.caption(f"{t_new_label} — {len(sentences_new)} sentence(s)")
     if sentences_new:
         st.markdown(f"- {sentences_new[0]}")
     if len(sentences_new) > 1:
         with st.expander(f"View {len(sentences_new) - 1} more corpus 2 sentence(s)…"):
             for s in sentences_new[1:]:
                 st.markdown(f"- {s}")
+
+if oed_mode:
+    st.info(
+        f"**OED mode** — '{word}' is not in the SemEval benchmark. "
+        "Using Oxford English Dictionary historical and modern quotes as corpus evidence.",
+        icon="📖",
+    )
 
 st.divider()
 
@@ -209,8 +246,8 @@ word_type = "verb" if word.endswith("_vb") else "noun"
 initial_state = {
     "word": word,
     "word_type": word_type,
-    "t_old": CORPUS1_LABEL,
-    "t_new": CORPUS2_LABEL,
+    "t_old": t_old_label,
+    "t_new": t_new_label,
     "sentences_old": sentences_old,
     "sentences_new": sentences_new,
     "arg_change": "",
@@ -218,7 +255,7 @@ initial_state = {
     "verdict": None,
 }
 
-graph = get_graph()
+graph = get_graph(use_grounding, use_lexicographer)
 
 # Accumulate debate content across streamed node updates so we can persist
 # the full trail after streaming completes (without a second LLM call).

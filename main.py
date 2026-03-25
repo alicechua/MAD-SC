@@ -66,15 +66,26 @@ def _parse_args() -> argparse.Namespace:
             "Ignored in single mode."
         ),
     )
+    grp = parser.add_mutually_exclusive_group()
+    grp.add_argument(
+        "--grounding",
+        dest="use_grounding",
+        action="store_true",
+        default=None,
+        help="Enable pre-debate BERT grounding.",
+    )
+    grp.add_argument(
+        "--no-grounding",
+        dest="use_grounding",
+        action="store_false",
+        help="Disable pre-debate BERT grounding.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
 
-    # ------------------------------------------------------------------
-    # Pick target word: CLI arg > first entry in targets.txt > fallback
-    # ------------------------------------------------------------------
     targets = get_targets()
     if args.word:
         word = args.word
@@ -101,11 +112,12 @@ def main() -> None:
     # ------------------------------------------------------------------
     mode = args.mode
     num_rounds = max(1, args.rounds)
+    grounding_kwargs = {} if args.use_grounding is None else {"use_grounding": args.use_grounding}
 
     if mode == "multi":
-        graph = compile_multi_round_graph(num_rounds=num_rounds)
+        graph = compile_multi_round_graph(num_rounds=num_rounds, **grounding_kwargs)
     else:
-        graph = compile_graph()
+        graph = compile_graph(**grounding_kwargs)
 
     # Derive word_type from the trailing _nn / _vb suffix.
     word_type = "verb" if word.endswith("_vb") else "noun"

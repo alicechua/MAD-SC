@@ -29,10 +29,13 @@ Usage
 
 from langgraph.graph import END, START, StateGraph
 
+from mad_sc.graph import _GROUNDING_DEFAULT, _LEXICOGRAPHER_DEFAULT
 from mad_sc.nodes import (
     closing_refuse_node,
     closing_support_node,
+    grounding_node,
     judge_node,
+    lexicographer_node,
     rebuttal_refuse_node,
     rebuttal_support_node,
     should_continue,
@@ -55,15 +58,25 @@ def _opening_refuse_record_node(state: GraphState) -> dict:
     return {"arg_stable": arg_stable, "debate_history": history}
 
 
-def compile_multi_round_graph(num_rounds: int = 3):
+def compile_multi_round_graph(
+    num_rounds: int = 3,
+    use_grounding: bool = _GROUNDING_DEFAULT,
+    use_lexicographer: bool = _LEXICOGRAPHER_DEFAULT,
+):
     """Build and compile the multi-round MAD-SC StateGraph.
 
     Parameters
     ----------
     num_rounds:
         Number of rebuttal rounds AFTER the opening exchange.
-        - ``0``: opening only → closing_support → judge.
-        - ``N``: opening + N rebuttal pairs → closing_support → judge.
+        - ``0``: opening only → closing_refuse → closing_support → judge.
+        - ``N``: opening + N rebuttal pairs → closing_refuse → closing_support → judge.
+    use_grounding:
+        When True, runs the BERT-based grounding node before the opening round.
+        The ``grounding_block`` is then available to all team nodes (opening + rebuttal).
+    use_lexicographer:
+        When True, runs the Lexicographer Agent before the opening round to produce
+        a Definition Dossier. The dossier is injected into all team and judge prompts.
 
     Returns
     -------
@@ -74,6 +87,20 @@ def compile_multi_round_graph(num_rounds: int = 3):
         raise ValueError(f"num_rounds must be >= 0, got {num_rounds}")
 
     builder = StateGraph(GraphState)
+
+    # --- Pre-debate nodes (optional) ------------------------------------
+    # Build the upstream chain: START → [grounding →] [lexicographer →] opening_support
+    upstream_tail = START
+
+    if use_grounding:
+        builder.add_node("grounding", grounding_node)
+        builder.add_edge(upstream_tail, "grounding")
+        upstream_tail = "grounding"
+
+    if use_lexicographer:
+        builder.add_node("lexicographer", lexicographer_node)
+        builder.add_edge(upstream_tail, "lexicographer")
+        upstream_tail = "lexicographer"
 
     # --- Opening round (round 0) ----------------------------------------
     builder.add_node("opening_support", team_support_node)
@@ -93,7 +120,8 @@ def compile_multi_round_graph(num_rounds: int = 3):
     builder.add_node("judge", judge_node)
 
     # --- Edges ----------------------------------------------------------
-    builder.add_edge(START, "opening_support")
+    # Opening pass: sequential (Support writes first, then Refuse responds).
+    builder.add_edge(upstream_tail, "opening_support")
     builder.add_edge("opening_support", "opening_refuse")
 
     # After opening: enter rebuttal loop or go straight to closing.
