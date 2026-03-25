@@ -39,6 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from mad_sc.graph import compile_graph  # noqa: E402
+from mad_sc.graph_multi import compile_multi_round_graph  # noqa: E402
 
 load_dotenv(PROJECT_ROOT / ".env")
 
@@ -190,6 +191,7 @@ def run_pipeline_for_word(
     word: str,
     sentences_old: list[str],
     sentences_new: list[str],
+    num_rounds: int = 1,
 ) -> dict:
     """
     Invoke the MAD-SC pipeline for a single word.
@@ -205,6 +207,9 @@ def run_pipeline_for_word(
         "sentences_new": sentences_new[:10],
         "arg_change": "",
         "arg_stable": "",
+        "num_rounds": num_rounds,
+        "current_round": 1,
+        "debate_history": [],
         "verdict": None,
     }
 
@@ -351,6 +356,7 @@ def save_trace(
         "coarse_pred": coarsen(predicted_type),
         "arg_change": result.get("arg_change", ""),
         "arg_stable": result.get("arg_stable", ""),
+        "debate_history": result.get("debate_history", []),
         "verdict": result.get("verdict", {}),
         "timestamp": datetime.now().isoformat(),
     }
@@ -443,6 +449,18 @@ def main():
         action="store_true",
         help="Skip words that already have a successful trace in the output directory",
     )
+    parser.add_argument(
+        "--mode",
+        choices=["single", "multi"],
+        default="single",
+        help="Debate mode: 'single' (parallel, default) or 'multi' (rebuttal rounds)",
+    )
+    parser.add_argument(
+        "--rounds",
+        type=int,
+        default=3,
+        help="Number of rebuttal rounds for --mode multi (default: 3)",
+    )
     grounding_group = parser.add_mutually_exclusive_group()
     grounding_group.add_argument(
         "--grounding",
@@ -493,16 +511,24 @@ def main():
     # ------------------------------------------------------------------
     # 2. Compile pipeline graph
     # ------------------------------------------------------------------
+    mode = args.mode
+    num_rounds = max(1, args.rounds)
+
     # use_grounding=None means the flag wasn't passed → fall back to compile_graph default
     graph_kwargs = {}
     if args.use_grounding is not None:
         graph_kwargs["use_grounding"] = args.use_grounding
     if args.use_lexicographer is not None:
         graph_kwargs["use_lexicographer"] = args.use_lexicographer
-    log.info("Compiling MAD-SC LangGraph pipeline… (grounding=%s, lexicographer=%s)",
+    log.info("Compiling MAD-SC LangGraph pipeline… (grounding=%s, lexicographer=%s, mode=%s, rounds=%d)",
              graph_kwargs.get("use_grounding", "env/default"),
-             graph_kwargs.get("use_lexicographer", "env/default"))
-    graph = compile_graph(**graph_kwargs)
+             graph_kwargs.get("use_lexicographer", "env/default"),
+             mode, num_rounds)
+
+    if mode == "multi":
+        graph = compile_multi_round_graph(num_rounds=num_rounds, **graph_kwargs)
+    else:
+        graph = compile_graph(**graph_kwargs)
 
     # ------------------------------------------------------------------
     # 3. Run pipeline on each word
@@ -531,6 +557,7 @@ def main():
                     result = {
                         "arg_change": trace.get("arg_change", ""),
                         "arg_stable": trace.get("arg_stable", ""),
+                        "debate_history": trace.get("debate_history", []),
                         "verdict": verdict_obj
                     }
                     predicted = trace.get("predicted_type")
@@ -546,12 +573,30 @@ def main():
             word=word,
             sentences_old=entry["historical_context"],
             sentences_new=entry["modern_context"],
+            num_rounds=num_rounds,
         )
 
         predicted = extract_predicted_type(result)
         entry["predicted_type"] = predicted
         entry["pipeline_result"] = result
         records.append(entry)
+
+        print(f"\n--- Debate Thread for '{word}' ---")
+        if mode == "multi":
+            for r_entry in result.get("debate_history", []):
+                r = r_entry.get("round", "")
+                print(f"\n[ROUND {r}/{num_rounds} — Team Support]:\n{r_entry.get('arg_change', '')}\n")
+                print(f"[ROUND {r}/{num_rounds} — Team Refuse]:\n{r_entry.get('arg_stable', '')}\n")
+        else:
+            print(f"[TEAM SUPPORT (Change)]:\n{result.get('arg_change', '')}\n")
+            print(f"[TEAM REFUSE (Stable)]:\n{result.get('arg_stable', '')}\n")
+        
+        verdict_obj = result.get("verdict", {})
+        v_status = verdict_obj.get("verdict", "N/A")
+        v_reasoning = verdict_obj.get("reasoning", "")
+        print(f"[LLM JUDGE]:\nVerdict: {v_status}")
+        print(f"Reasoning:\n{v_reasoning}\n")
+        print("-" * 65)
 
         # Log per-word result
         verdict_label = (result.get("verdict") or {}).get("verdict", "N/A")

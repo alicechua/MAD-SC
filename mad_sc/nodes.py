@@ -859,18 +859,33 @@ the final round. Apply the verdict rules in your system prompt strictly."""
 
 def _run_coarse_stage(word: str, t_old: str, t_new: str,
                       arg_change: str, arg_stable: str,
-                      lexicographer_dossier: str = "") -> _CoarseVerdict | None:
+                      lexicographer_dossier: str = "",
+                      debate_history: list = None,
+                      num_rounds: int = 1,
+                      word_type: str = "word") -> _CoarseVerdict | None:
     """Stage 1: classify into STABLE / Transfer / Broadening / Narrowing."""
     coarse_system = (
         f"{lexicographer_dossier}\n\n{_JUDGE_COARSE_SYSTEM}"
         if lexicographer_dossier else _JUDGE_COARSE_SYSTEM
     )
-    messages = [
-        SystemMessage(content=coarse_system),
-        HumanMessage(content=_JUDGE_COARSE_USER.format(
+    
+    if debate_history and num_rounds > 1:
+        history_text = _format_debate_history(debate_history)
+        user_prompt = _JUDGE_MULTI_USER.format(
+            num_rounds=num_rounds,
+            word=word, t_old=t_old, t_new=t_new,
+            word_type=word_type,
+            history=history_text,
+        )
+    else:
+        user_prompt = _JUDGE_COARSE_USER.format(
             word=word, t_old=t_old, t_new=t_new,
             arg_change=arg_change, arg_stable=arg_stable,
-        )),
+        )
+
+    messages = [
+        SystemMessage(content=coarse_system),
+        HumanMessage(content=user_prompt),
     ]
     try:
         llm = _get_judge_llm(temperature=0.1).with_structured_output(_CoarseVerdict)
@@ -885,10 +900,7 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
     raw_llm = _get_judge_llm(temperature=0.1)
     messages_raw = [
         SystemMessage(content=coarse_system),
-        HumanMessage(content=_JUDGE_COARSE_USER.format(
-            word=word, t_old=t_old, t_new=t_new,
-            arg_change=arg_change, arg_stable=arg_stable,
-        ) + "\n\nRespond with a JSON object: {\"coarse_category\": \"...\", \"reasoning\": \"...\"}"),
+        HumanMessage(content=user_prompt + "\n\nRespond with a JSON object: {\"coarse_category\": \"...\", \"reasoning\": \"...\"}"),
     ]
     try:
         resp = _robust_invoke(raw_llm, messages_raw)
@@ -949,10 +961,16 @@ def judge_node(state: GraphState) -> dict:
     t_old, t_new = state["t_old"], state["t_new"]
     arg_change, arg_stable = state["arg_change"], state["arg_stable"]
     dossier = state.get("lexicographer_dossier", "") or ""
+    debate_history = state.get("debate_history", [])
+    num_rounds = state.get("num_rounds", 1)
+    word_type = state.get("word_type", "word")
 
     # ── Stage 1: Coarse ──────────────────────────────────────────────────────
     coarse = _run_coarse_stage(word, t_old, t_new, arg_change, arg_stable,
-                               lexicographer_dossier=dossier)
+                               lexicographer_dossier=dossier,
+                               debate_history=debate_history,
+                               num_rounds=num_rounds,
+                               word_type=word_type)
 
     if coarse is None or coarse.coarse_category == "STABLE":
         return {"verdict": JudgeVerdict(
