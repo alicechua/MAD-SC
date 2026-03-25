@@ -150,9 +150,9 @@ def main():
         max_retries = 10
         pred_label = 0
         
-        # Proactively sleep 15 seconds per word to avoid 15 RPM limit 
-        # (each graph run is ~3 LLM calls)
-        time.sleep(15)
+        # Proactively sleep 30 seconds per word to avoid 15 RPM limit 
+        # (multi-round debates make many LLM calls per word)
+        time.sleep(30)
         
         for attempt in range(max_retries):
             try:
