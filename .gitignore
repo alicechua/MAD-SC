@@ -51,3 +51,4 @@ env/
 *.json
 .coverage
 htmlcov/
+results/
