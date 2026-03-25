@@ -905,16 +905,6 @@ IMPORTANT: You MUST output a valid JSON object matching this schema exactly:
   "reasoning": "<your full reasoning>"
 }"""
 
-# Used for multi-round debates — judge receives the complete transcript.
-_JUDGE_MULTI_USER = """Evaluate the complete {num_rounds}-round debate about the word \
-"{word}" (used as a {word_type}), {t_old} vs. {t_new}.
-
-{history}
-
-The closing statements represent each team's final position after reading all of \
-the rebuttals. Base your verdict on the full transcript above, not just \
-the final round. Apply the verdict rules in your system prompt strictly."""
-
 # Used for single-round (parallel) debates — only the two opening arguments are available.
 _JUDGE_USER = """Evaluate the following debate about the word "{word}" (used as a {word_type}) \
 ({t_old} vs. {t_new}):
@@ -928,24 +918,45 @@ _JUDGE_USER = """Evaluate the following debate about the word "{word}" (used as 
 Work through the diagnostic checklist step-by-step, then output ONLY a valid JSON \
 object with your final structured verdict. Use the exact JSON schema from your instructions."""
 
+# Used for multi-round debates — the judge receives the complete transcript.
+_JUDGE_MULTI_USER = """Evaluate the complete {num_rounds}-round debate about the word \
+"{word}" (used as a {word_type}), {t_old} vs. {t_new}.
+
+{history}
+
+The closing statements represent each team's final position after reading all of \
+the rebuttals. Base your verdict on the full transcript above, not just \
+the final round. Apply the verdict rules in your system prompt strictly."""
+
 
 def _run_coarse_stage(word: str, t_old: str, t_new: str,
                       arg_change: str, arg_stable: str,
                       lexicographer_dossier: str = "",
-                      debate_history_text: str = "") -> _CoarseVerdict | None:
+                      debate_history: list = None,
+                      num_rounds: int = 1,
+                      word_type: str = "word") -> _CoarseVerdict | None:
     """Stage 1: classify into STABLE / Transfer / Broadening / Narrowing."""
     coarse_system = (
         f"{lexicographer_dossier}\n\n{_JUDGE_COARSE_SYSTEM}"
         if lexicographer_dossier else _JUDGE_COARSE_SYSTEM
     )
-    history_section = f"\n\n{debate_history_text}" if debate_history_text else ""
-    user_content = _JUDGE_COARSE_USER.format(
-        word=word, t_old=t_old, t_new=t_new,
-        arg_change=arg_change, arg_stable=arg_stable,
-    ) + history_section
+    if debate_history and num_rounds > 1:
+        history_text = _format_debate_history(debate_history)
+        user_prompt = _JUDGE_MULTI_USER.format(
+            num_rounds=num_rounds,
+            word=word, t_old=t_old, t_new=t_new,
+            word_type=word_type,
+            history=history_text,
+        )
+    else:
+        user_prompt = _JUDGE_COARSE_USER.format(
+            word=word, t_old=t_old, t_new=t_new,
+            arg_change=arg_change, arg_stable=arg_stable,
+        )
+
     messages = [
         SystemMessage(content=coarse_system),
-        HumanMessage(content=user_content),
+        HumanMessage(content=user_prompt),
     ]
     try:
         llm = _get_judge_llm(temperature=0.1).with_structured_output(_CoarseVerdict)
@@ -960,7 +971,7 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
     raw_llm = _get_judge_llm(temperature=0.1)
     messages_raw = [
         SystemMessage(content=coarse_system),
-        HumanMessage(content=user_content + "\n\nRespond with a JSON object: {\"coarse_category\": \"...\", \"reasoning\": \"...\"}"),
+        HumanMessage(content=user_prompt + "\n\nRespond with a JSON object: {\"coarse_category\": \"...\", \"reasoning\": \"...\"}"),
     ]
     try:
         resp = _robust_invoke(raw_llm, messages_raw)
@@ -1050,12 +1061,16 @@ def judge_node(state: GraphState) -> dict:
     t_old, t_new = state["t_old"], state["t_new"]
     arg_change, arg_stable = state["arg_change"], state["arg_stable"]
     dossier = state.get("lexicographer_dossier", "") or ""
-    debate_history_text = _format_debate_history(state.get("debate_history", []))
+    debate_history = state.get("debate_history", [])
+    num_rounds = state.get("num_rounds", 1)
+    word_type = state.get("word_type", "word")
 
     # ── Stage 1: Coarse ──────────────────────────────────────────────────────
     coarse = _run_coarse_stage(word, t_old, t_new, arg_change, arg_stable,
                                lexicographer_dossier=dossier,
-                               debate_history_text=debate_history_text)
+                               debate_history=debate_history,
+                               num_rounds=num_rounds,
+                               word_type=word_type)
 
     if coarse is None or coarse.coarse_category == "STABLE":
         return {"verdict": JudgeVerdict(
@@ -1089,7 +1104,6 @@ def judge_node(state: GraphState) -> dict:
     verdict = _run_transfer_stage(
         word, t_old, t_new, arg_change, arg_stable, coarse.reasoning,
         lexicographer_dossier=dossier,
-        debate_history_text=debate_history_text,
     )
     return {"verdict": verdict.model_dump()}
 

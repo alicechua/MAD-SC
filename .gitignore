@@ -51,6 +51,7 @@ env/
 *.json
 .coverage
 htmlcov/
+results/
 
 # Evaluation Results
 eval_results*/
