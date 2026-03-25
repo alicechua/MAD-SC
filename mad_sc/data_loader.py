@@ -11,6 +11,14 @@ tags.  Matching is therefore performed on the lemma file, and the corresponding
 line from the parallel token file — which contains natural, punctuated prose —
 is returned to the agents.
 
+Sampling strategy
+-----------------
+Sentences are selected via **reservoir sampling** (Algorithm R) so that the
+returned sample is uniformly random over all matches in the corpus — not just
+the first N chronological hits.  A deterministic seed derived from the target
+word is used by default so results are reproducible; pass an explicit ``seed``
+to override.
+
 Environment variables
 ---------------------
 SEMEVAL_DIR          Path to the semeval2020_ulscd_eng directory.
@@ -22,6 +30,7 @@ from __future__ import annotations
 
 import gzip
 import os
+import random
 import re
 from pathlib import Path
 
@@ -67,11 +76,12 @@ def get_targets() -> list[str]:
 def get_semeval_contexts(
     target_word: str,
     max_samples: int = DEFAULT_MAX_SAMPLES,
+    seed: int | None = None,
 ) -> tuple[list[str], list[str]]:
     """Retrieve context sentences for *target_word* from both SemEval corpora.
 
-    Searches the lemma files for the target word and returns the corresponding
-    readable sentences from the parallel token files.
+    Sentences are drawn via reservoir sampling so the returned set is a
+    uniform random sample of *all* matching sentences — not just the first N.
 
     Parameters
     ----------
@@ -81,6 +91,10 @@ def get_semeval_contexts(
         accepted and will match any POS variant present in the lemma files.
     max_samples : int
         Maximum sentences to return per corpus.
+    seed : int | None
+        RNG seed for reservoir sampling.  When *None* (default) a
+        deterministic seed derived from *target_word* is used so repeated
+        calls return the same sample.  Pass a different integer to vary it.
 
     Returns
     -------
@@ -106,9 +120,12 @@ def get_semeval_contexts(
             print(f"[data_loader] WARNING: Expected file not found: {path}")
             return [], []
 
+    # Derive a reproducible per-word seed when the caller does not supply one.
+    effective_seed = seed if seed is not None else (hash(target_word) % (2 ** 31))
+
     pattern = _build_pattern(target_word)
-    sentences_c1 = _extract_sentences(c1_lemma, c1_token, pattern, max_samples)
-    sentences_c2 = _extract_sentences(c2_lemma, c2_token, pattern, max_samples)
+    sentences_c1 = _extract_sentences(c1_lemma, c1_token, pattern, max_samples, effective_seed)
+    sentences_c2 = _extract_sentences(c2_lemma, c2_token, pattern, max_samples, effective_seed + 1)
     return sentences_c1, sentences_c2
 
 
@@ -141,13 +158,23 @@ def _extract_sentences(
     token_gz: Path,
     pattern: re.Pattern,
     max_samples: int,
+    seed: int = 0,
 ) -> list[str]:
-    """Stream lemma and token gz files line-by-line in parallel.
+    """Stream lemma and token gz files using reservoir sampling (Algorithm R).
 
-    When a lemma line matches *pattern*, the corresponding token-file line
-    (readable prose) is collected.  Stops once *max_samples* are gathered.
+    Unlike a simple first-N scan, reservoir sampling gives every matching
+    sentence an equal probability of appearing in the returned set, regardless
+    of where it sits in the corpus.  This avoids the systematic bias of
+    returning only early-corpus (often older-style) sentences even when the
+    corpus file itself spans the full period.
+
+    Time complexity: O(n) where n = total matching sentences.
+    Space complexity: O(max_samples).
     """
-    results: list[str] = []
+    rng = random.Random(seed)
+    reservoir: list[str] = []
+    count = 0
+
     with (
         gzip.open(lemma_gz, "rt", encoding="utf-8", errors="ignore") as lf,
         gzip.open(token_gz, "rt", encoding="utf-8", errors="ignore") as tf,
@@ -155,8 +182,15 @@ def _extract_sentences(
         for lemma_line, token_line in zip(lf, tf):
             if pattern.search(lemma_line):
                 sentence = token_line.strip()
-                if sentence:
-                    results.append(sentence)
-                    if len(results) >= max_samples:
-                        break
-    return results
+                if not sentence:
+                    continue
+                count += 1
+                if len(reservoir) < max_samples:
+                    reservoir.append(sentence)
+                else:
+                    # Replace a random slot with decreasing probability.
+                    j = rng.randint(0, count - 1)
+                    if j < max_samples:
+                        reservoir[j] = sentence
+
+    return reservoir

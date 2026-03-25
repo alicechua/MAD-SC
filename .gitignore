@@ -55,6 +55,7 @@ htmlcov/
 # Evaluation Results
 eval_results*/
 evals/
+results/
 
 # Project notes (local only)
 EXPERIMENTS.md

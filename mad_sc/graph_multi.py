@@ -8,13 +8,17 @@ Round 0 (opening):   START → opening_support → opening_refuse_record
                                            ┌─────────────────┐
                                     more rounds?         no rounds?
                                            │                  │
-                              Round 1..N (rebuttal):       judge → END
+                              Round 1..N (rebuttal):  closing_support → judge → END
                          rebuttal_support → rebuttal_refuse
-                                   └──── should_continue ───┘
+                                   └──── should_continue ────┘
+                                              │ (exhausted)
+                                       closing_support → judge → END
 
-Round 0 uses the original opening-statement prompts so each team makes its
-best independent case. Each rebuttal round uses prompts that quote the
-opponent's PREVIOUS argument and ask for a direct counter.
+Round 0 uses the opening-statement prompts so each team makes its best
+independent case.  Each rebuttal round quotes the opponent's PREVIOUS argument.
+After all rebuttals, a closing_support step lets Team Support respond one final
+time to Team Refuse's last argument — neutralising the last-word advantage.
+The judge receives the FULL debate transcript, not just the final round pair.
 
 Usage
 -----
@@ -27,6 +31,8 @@ from langgraph.graph import END, START, StateGraph
 
 from mad_sc.graph import _GROUNDING_DEFAULT, _LEXICOGRAPHER_DEFAULT
 from mad_sc.nodes import (
+    closing_refuse_node,
+    closing_support_node,
     grounding_node,
     judge_node,
     lexicographer_node,
@@ -43,7 +49,6 @@ def _opening_refuse_record_node(state: GraphState) -> dict:
     """Run Team Refuse's opening statement and record round 0 in debate_history."""
     result = team_refuse_node(state)
     arg_stable = result["arg_stable"]
-    # Record the opening exchange as round 0 in the history.
     history = list(state.get("debate_history", []))
     history.append({
         "round": 0,
@@ -64,9 +69,9 @@ def compile_multi_round_graph(
     ----------
     num_rounds:
         Number of rebuttal rounds AFTER the opening exchange.
-        - ``0``: opening statements only (Support + Refuse, no rebuttals) → judge.
-        - ``1``: opening + 1 rebuttal round each → judge.
-        - ``N``: opening + N rebuttal rounds each → judge.
+        - ``0``: opening statements only (Support + Refuse, no rebuttals) → closing → judge.
+        - ``1``: opening + 1 rebuttal round each → closing → judge.
+        - ``N``: opening + N rebuttal rounds each → closing → judge.
     use_grounding:
         When True, runs the BERT-based grounding node before the opening round.
         The ``grounding_block`` is then available to all team nodes (opening + rebuttal).
@@ -99,14 +104,18 @@ def compile_multi_round_graph(
         upstream_tail = "lexicographer"
 
     # --- Opening round (round 0) ----------------------------------------
-    # Uses original opening-statement prompts; teams don't see each other yet.
     builder.add_node("opening_support", team_support_node)
     builder.add_node("opening_refuse", _opening_refuse_record_node)
 
     # --- Rebuttal round nodes (rounds 1..N) -----------------------------
-    # Each team reads the opponent's last argument and writes a direct counter.
     builder.add_node("rebuttal_support", rebuttal_support_node)
     builder.add_node("rebuttal_refuse", rebuttal_refuse_node)
+
+    # --- Closing rounds -------------------------------------------------
+    # Both teams get a closing statement to summarize their arguments.
+    # Refuse goes first in closing, then Support gets the final word.
+    builder.add_node("closing_refuse", closing_refuse_node)
+    builder.add_node("closing_support", closing_support_node)
 
     # --- Judge (terminal) -----------------------------------------------
     builder.add_node("judge", judge_node)
@@ -116,29 +125,31 @@ def compile_multi_round_graph(
     builder.add_edge(upstream_tail, "opening_support")
     builder.add_edge("opening_support", "opening_refuse")
 
-    # After opening: enter rebuttal loop if num_rounds >= 1, else go to judge.
-    # current_round starts at 1; should_continue routes to rebuttal if
-    # current_round <= num_rounds.
+    # After opening: enter rebuttal loop or go straight to closing.
+    # should_continue returns "judge" when exhausted; we remap that to
+    # "closing_refuse" so the judge always sees both closings first.
     builder.add_conditional_edges(
         "opening_refuse",
         should_continue,
         {
             "rebuttal_support": "rebuttal_support",
-            "judge": "judge",
+            "judge": "closing_refuse",
         },
     )
 
-    # Rebuttal loop: Support → Refuse → conditional (loop or exit).
+    # Rebuttal loop: Support → Refuse → conditional (loop or closing).
     builder.add_edge("rebuttal_support", "rebuttal_refuse")
     builder.add_conditional_edges(
         "rebuttal_refuse",
         should_continue,
         {
             "rebuttal_support": "rebuttal_support",
-            "judge": "judge",
+            "judge": "closing_refuse",
         },
     )
 
+    builder.add_edge("closing_refuse", "closing_support")
+    builder.add_edge("closing_support", "judge")
     builder.add_edge("judge", END)
 
     return builder.compile()
