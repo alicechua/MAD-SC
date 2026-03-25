@@ -224,6 +224,13 @@ def main():
         json.dump(debate_logs, f, indent=2)
     print(f"Debate transcripts saved to {debate_logs_file}")
     
+    try:
+        from scripts.export_to_markdown import export_debate_to_md
+        md_file = out_dir / f"debate_logs_{run_ts}.md"
+        export_debate_to_md(str(debate_logs_file), str(md_file))
+    except Exception as e:
+        print(f"Could not export Markdown: {e}")
+    
     # Save results
     with open(results_file, "w") as f:
         json.dump({
