@@ -1,7 +1,8 @@
 """MAD-SC Streamlit application.
 
-Provides an interactive frontend that streams the tri-agent debate in
-real-time and renders the Judge's structured verdict.
+Provides an interactive debate-style frontend that streams the multi-agent
+debate round by round, with chat bubbles and typing animation, followed by
+the Judge's structured verdict.
 
 Run
 ---
@@ -10,6 +11,7 @@ Run
 """
 
 import json
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -22,20 +24,14 @@ from mad_sc.data_loader import (
 )
 from mad_sc.etymology import fetch_etymology_context
 from mad_sc.graph import compile_graph
+from mad_sc.graph_multi import compile_multi_round_graph
 from mad_sc.log_utils import append_debate_log
 
 load_dotenv()
 
 
 def _extract_text(content) -> str:
-    """Normalise an LLM response content value to a plain string.
-
-    Handles three formats that different LangChain / Anthropic SDK versions
-    may return:
-      - str                          → returned as-is
-      - AIMessage (has .content)     → recurse on .content
-      - list[dict] with 'text' keys  → join all 'text' values (Anthropic blocks)
-    """
+    """Normalise an LLM response content value to a plain string."""
     if isinstance(content, str):
         return content
     if hasattr(content, "content"):
@@ -49,6 +45,14 @@ def _extract_text(content) -> str:
     return str(content)
 
 
+def _stream_text(text: str, delay: float = 0.02):
+    """Yield text word-by-word for st.write_stream() typing animation."""
+    words = text.split(" ")
+    for i, word in enumerate(words):
+        yield word + (" " if i < len(words) - 1 else "")
+        time.sleep(delay)
+
+
 # ---------------------------------------------------------------------------
 # Page config
 # ---------------------------------------------------------------------------
@@ -60,13 +64,22 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Cached graph (avoids recompilation on every Streamlit rerun)
+# Cached graphs
 # ---------------------------------------------------------------------------
 
 
 @st.cache_resource
-def get_graph(use_grounding: bool, use_lexicographer: bool):
+def get_single_graph(use_grounding: bool, use_lexicographer: bool):
     return compile_graph(use_grounding=use_grounding, use_lexicographer=use_lexicographer)
+
+
+@st.cache_resource
+def get_multi_graph(num_rounds: int, use_grounding: bool, use_lexicographer: bool):
+    return compile_multi_round_graph(
+        num_rounds=num_rounds,
+        use_grounding=use_grounding,
+        use_lexicographer=use_lexicographer,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +91,6 @@ with st.sidebar:
     st.caption("Multi-Agent Debate for Semantic Change")
     st.divider()
 
-    # Populate dropdown from targets.txt; fall back to a hardcoded list.
     targets = get_targets()
     if not targets:
         targets = ["edge_nn", "record_nn", "attack_nn", "plane_nn", "gas_nn"]
@@ -100,27 +112,43 @@ with st.sidebar:
         "Max sentences per period", min_value=3, max_value=20, value=10, step=1
     )
 
+    st.divider()
+
+    debate_mode = st.radio(
+        "Debate mode",
+        options=["Multi-round", "Single round"],
+        index=0,
+        help="Multi-round: opening + rebuttal rounds + closing statements → judge. Single round: both teams argue once → judge.",
+    )
+
+    num_rounds = 3
+    if debate_mode == "Multi-round":
+        num_rounds = st.slider(
+            "Rebuttal rounds", min_value=1, max_value=5, value=3, step=1,
+            help="Number of rebuttal rounds after the opening exchange.",
+        )
+
+    st.divider()
+
     use_grounding = st.toggle(
         "Pre-debate grounding (BERT)",
         value=False,
-        help="Run BERT-based SED/TD analysis before the debate and inject quantitative evidence into agent prompts. Slower but adds embedding-distance signal.",
+        help="Run BERT-based SED/TD analysis before the debate and inject quantitative evidence into agent prompts.",
     )
     use_lexicographer = st.toggle(
         "Lexicographer Agent",
         value=True,
-        help="Run the Lexicographer Agent before the debate to produce a Definition Dossier (historical/modern senses + change mechanism). Anchors teams to etymological ground truth.",
+        help="Run the Lexicographer Agent before the debate to produce a Definition Dossier.",
     )
 
     run_btn = st.button("Run Debate", type="primary", use_container_width=True)
 
     st.divider()
-    st.markdown(
-        f"**Time periods**  \n{CORPUS1_LABEL}  \n{CORPUS2_LABEL}"
-    )
+    st.markdown(f"**Time periods**  \n{CORPUS1_LABEL}  \n{CORPUS2_LABEL}")
     st.divider()
     st.caption(
-        "Agents: **Team Support** (change hypothesis) vs **Team Refuse** "
-        "(stability hypothesis), adjudicated by an **LLM Judge**."
+        "🔴 **Team Support** (change hypothesis) vs 🔵 **Team Refuse** "
+        "(stability hypothesis), adjudicated by ⚖️ **Judge**."
     )
 
 # ---------------------------------------------------------------------------
@@ -141,7 +169,7 @@ if not run_btn:
 # Step 1 — Load corpus sentences
 # ---------------------------------------------------------------------------
 
-oed_mode = False  # set True when OED quotes are used as corpus sentences
+oed_mode = False
 t_old_label = CORPUS1_LABEL
 t_new_label = CORPUS2_LABEL
 
@@ -149,7 +177,6 @@ with st.status("Loading corpus sentences…", expanded=False) as load_status:
     sentences_old, sentences_new = get_semeval_contexts(word, max_samples=max_samples)
 
     if not sentences_old and not sentences_new:
-        # Fall back to OED quotes for any arbitrary word.
         load_status.update(label="No SemEval data — fetching OED quotes…")
         oed_ctx = fetch_etymology_context(word)
         if oed_ctx["historical"] or oed_ctx["modern"]:
@@ -207,40 +234,40 @@ if oed_mode:
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Step 3 — Debate columns  (populated by streaming)
+# Step 3 — Debate (chat-bubble layout, streamed round by round)
 # ---------------------------------------------------------------------------
 
 st.subheader("Adversarial Debate")
 
-col_support, col_refuse = st.columns(2, gap="large")
+# Accumulate for log
+_arg_change: str = ""
+_arg_stable: str = ""
+_debate_history: list = []
+_verdict_dict: dict = {}
+_dossier: str = ""
 
-with col_support:
-    st.markdown("##### Team Support")
-    st.caption("Hypothesis: semantic change HAS occurred")
-    support_box = st.empty()
-    support_box.info("Waiting for Team Support agent…")
+# State for tracking which round header to print next
+_printed_round_headers: set = set()
+_pending_support: str | None = None  # buffer Support text until Refuse arrives (multi-round)
 
-with col_refuse:
-    st.markdown("##### Team Refuse")
-    st.caption("Null hypothesis: semantic stability")
-    refuse_box = st.empty()
-    refuse_box.info("Waiting for Team Refuse agent…")
 
-st.divider()
+def _round_label(rnd) -> str:
+    if rnd == 0:
+        return "Opening Statements"
+    if rnd == "closing":
+        return "Closing Statements"
+    total = num_rounds if debate_mode == "Multi-round" else 1
+    return f"Rebuttal Round {rnd} / {total}"
 
-# ---------------------------------------------------------------------------
-# Step 4 — Judge verdict placeholder
-# ---------------------------------------------------------------------------
 
-st.subheader("Judge Verdict")
-verdict_box = st.empty()
-verdict_box.info("Awaiting Judge verdict…")
+def _print_round_header(rnd):
+    if rnd not in _printed_round_headers:
+        _printed_round_headers.add(rnd)
+        label = _round_label(rnd)
+        st.markdown(f"---\n**{label}**")
 
-# ---------------------------------------------------------------------------
-# Step 5 — Stream the LangGraph pipeline
-# ---------------------------------------------------------------------------
 
-# Derive word_type from the trailing _nn / _vb suffix.
+# Build and run the graph
 word_type = "verb" if word.endswith("_vb") else "noun"
 
 initial_state = {
@@ -253,76 +280,129 @@ initial_state = {
     "arg_change": "",
     "arg_stable": "",
     "verdict": None,
+    "num_rounds": num_rounds,
+    "current_round": 1,
+    "debate_history": [],
 }
 
-graph = get_graph(use_grounding, use_lexicographer)
+if debate_mode == "Multi-round":
+    graph = get_multi_graph(num_rounds, use_grounding, use_lexicographer)
+else:
+    graph = get_single_graph(use_grounding, use_lexicographer)
 
-# Accumulate debate content across streamed node updates so we can persist
-# the full trail after streaming completes (without a second LLM call).
-_arg_change: str = ""
-_arg_stable: str = ""
-_verdict_dict: dict = {}
-
-with st.status(
-    f"Running debate for '{word}'…",
-    expanded=True,
-) as debate_status:
+with st.status(f"Running debate for '{word}'…", expanded=True) as debate_status:
 
     for chunk in graph.stream(initial_state, stream_mode="updates"):
         for node_name, update in chunk.items():
 
-            # ── Team Support ──────────────────────────────────────────────
-            if node_name == "team_support":
-                _arg_change = _extract_text(update.get("arg_change", ""))
-                support_box.markdown(_arg_change)
-                st.write("Team Support completed.")
+            # ── Lexicographer ──────────────────────────────────────────────
+            if node_name == "lexicographer":
+                _dossier = update.get("lexicographer_dossier", "") or ""
+                if _dossier:
+                    with st.expander("📖 Lexicographer Dossier", expanded=False):
+                        st.code(_dossier, language=None)
+                    st.write("Lexicographer Agent completed.")
 
-            # ── Team Refuse ───────────────────────────────────────────────
-            elif node_name == "team_refuse":
+            # ── Grounding ─────────────────────────────────────────────────
+            elif node_name == "grounding":
+                st.write("BERT grounding completed.")
+
+            # ── Opening / single-round Support ────────────────────────────
+            elif node_name in ("team_support", "opening_support"):
+                _arg_change = _extract_text(update.get("arg_change", ""))
+                rnd = 0
+                _print_round_header(rnd)
+                with st.chat_message("Team Support", avatar="🔴"):
+                    st.caption("Change Hypothesis")
+                    st.write_stream(_stream_text(_arg_change))
+                st.write("🔴 Team Support completed.")
+
+            # ── Opening / single-round Refuse ─────────────────────────────
+            elif node_name in ("team_refuse", "opening_refuse_record"):
                 _arg_stable = _extract_text(update.get("arg_stable", ""))
-                refuse_box.markdown(_arg_stable)
-                st.write("Team Refuse completed.")
+                with st.chat_message("Team Refuse", avatar="🔵"):
+                    st.caption("Stability Hypothesis")
+                    st.write_stream(_stream_text(_arg_stable))
+                st.write("🔵 Team Refuse completed.")
+
+            # ── Rebuttal Support ──────────────────────────────────────────
+            elif node_name == "rebuttal_support":
+                _arg_change = _extract_text(update.get("arg_change", ""))
+                history = update.get("debate_history", [])
+                rnd = history[-1]["round"] if history else "?"
+                _print_round_header(rnd)
+                with st.chat_message("Team Support", avatar="🔴"):
+                    st.caption(f"Rebuttal Round {rnd}")
+                    st.write_stream(_stream_text(_arg_change))
+                st.write(f"🔴 Team Support rebuttal {rnd} completed.")
+
+            # ── Rebuttal Refuse ───────────────────────────────────────────
+            elif node_name == "rebuttal_refuse":
+                _arg_stable = _extract_text(update.get("arg_stable", ""))
+                history = update.get("debate_history", [])
+                rnd = history[-1]["round"] if history else "?"
+                with st.chat_message("Team Refuse", avatar="🔵"):
+                    st.caption(f"Rebuttal Round {rnd}")
+                    st.write_stream(_stream_text(_arg_stable))
+                st.write(f"🔵 Team Refuse rebuttal {rnd} completed.")
+
+            # ── Closing Refuse ────────────────────────────────────────────
+            elif node_name == "closing_refuse":
+                _arg_stable = _extract_text(update.get("arg_stable", ""))
+                _print_round_header("closing")
+                with st.chat_message("Team Refuse", avatar="🔵"):
+                    st.caption("Closing Statement")
+                    st.write_stream(_stream_text(_arg_stable))
+                st.write("🔵 Team Refuse closing completed.")
+
+            # ── Closing Support ───────────────────────────────────────────
+            elif node_name == "closing_support":
+                _arg_change = _extract_text(update.get("arg_change", ""))
+                with st.chat_message("Team Support", avatar="🔴"):
+                    st.caption("Closing Statement")
+                    st.write_stream(_stream_text(_arg_change))
+                st.write("🔴 Team Support closing completed.")
 
             # ── Judge ─────────────────────────────────────────────────────
             elif node_name == "judge":
-                _verdict_dict = update.get("verdict", {})
-                st.write("Judge rendered verdict.")
-
+                _verdict_dict = update.get("verdict", {}) or {}
                 verdict_label = _verdict_dict.get("verdict", "UNKNOWN")
                 change_detected = verdict_label == "CHANGE DETECTED"
 
-                with verdict_box.container():
+                st.markdown("---")
+                with st.chat_message("Judge", avatar="⚖️"):
                     if change_detected:
                         st.error(f"**{verdict_label}**", icon="🔴")
                     else:
                         st.success(f"**{verdict_label}**", icon="🟢")
 
                     m1, m2, m3 = st.columns(3)
-                    m1.metric("Verdict", verdict_label)
-                    m2.metric("Change Type", _verdict_dict.get("change_type") or "N/A")
-                    m3.metric("Causal Driver", _verdict_dict.get("causal_driver") or "N/A")
-
-                    if _verdict_dict.get("break_point_year"):
-                        st.metric("Estimated Break-point Year", _verdict_dict["break_point_year"])
+                    m1.metric("Change Type", _verdict_dict.get("change_type") or "N/A")
+                    m2.metric("Causal Driver", _verdict_dict.get("causal_driver") or "N/A")
+                    m3.metric(
+                        "Break-point Year",
+                        _verdict_dict.get("break_point_year") or "N/A",
+                    )
 
                     st.markdown("**Reasoning**")
-                    st.markdown(_verdict_dict.get("reasoning", ""))
+                    st.write_stream(_stream_text(_verdict_dict.get("reasoning", "")))
 
                     with st.expander("Raw JSON output"):
                         st.json(_verdict_dict)
 
+                st.write("⚖️ Judge rendered verdict.")
+
     debate_status.update(label="Debate complete.", state="complete", expanded=False)
 
 # ---------------------------------------------------------------------------
-# Persist the full debate trail once streaming is complete.
-# All three values (_arg_change, _arg_stable, _verdict_dict) were accumulated
-# per-node during the stream loop above; no second LLM call is needed.
+# Persist the full debate trail
 # ---------------------------------------------------------------------------
 
 _final_state = {
     **initial_state,
     "arg_change": _arg_change,
     "arg_stable": _arg_stable,
+    "debate_history": _debate_history,
     "verdict": _verdict_dict,
 }
 append_debate_log(_final_state)
