@@ -366,36 +366,41 @@ with st.status(f"Running debate for '{word}'…", expanded=True) as debate_statu
             # ── Judge ─────────────────────────────────────────────────────
             elif node_name == "judge":
                 _verdict_dict = update.get("verdict", {}) or {}
-                verdict_label = _verdict_dict.get("verdict", "UNKNOWN")
-                change_detected = verdict_label == "CHANGE DETECTED"
-
-                st.markdown("---")
-                with st.chat_message("Judge", avatar="⚖️"):
-                    if change_detected:
-                        st.error(f"**{verdict_label}**", icon="🔴")
-                    else:
-                        st.success(f"**{verdict_label}**", icon="🟢")
-
-                    m1, m2, m3 = st.columns(3)
-                    m1.metric("Change Type", _verdict_dict.get("change_type") or "N/A")
-                    m2.metric("Causal Driver", _verdict_dict.get("causal_driver") or "N/A")
-                    m3.metric(
-                        "Break-point Year",
-                        _verdict_dict.get("break_point_year") or "N/A",
-                    )
-
-                    st.markdown("**Reasoning**")
-                    st.write_stream(_stream_text(_verdict_dict.get("reasoning", "")))
-
-                    with st.expander("Raw JSON output"):
-                        st.json(_verdict_dict)
-
                 st.write("⚖️ Judge rendered verdict.")
 
     debate_status.update(label="Debate complete.", state="complete", expanded=False)
 
 # ---------------------------------------------------------------------------
-# Persist the full debate trail
+# Step 4 — Judge verdict (rendered outside status so it stays visible)
+# ---------------------------------------------------------------------------
+
+if _verdict_dict:
+    verdict_label = _verdict_dict.get("verdict", "UNKNOWN")
+    change_detected = verdict_label == "CHANGE DETECTED"
+
+    st.markdown("---")
+    with st.chat_message("Judge", avatar="⚖️"):
+        if change_detected:
+            st.error(f"**{verdict_label}**", icon="🔴")
+        else:
+            st.success(f"**{verdict_label}**", icon="🟢")
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Change Type", _verdict_dict.get("change_type") or "N/A")
+        m2.metric("Causal Driver", _verdict_dict.get("causal_driver") or "N/A")
+        m3.metric(
+            "Break-point Year",
+            _verdict_dict.get("break_point_year") or "N/A",
+        )
+
+        st.markdown("**Reasoning**")
+        st.write_stream(_stream_text(_verdict_dict.get("reasoning", "")))
+
+        with st.expander("Raw JSON output"):
+            st.json(_verdict_dict)
+
+# ---------------------------------------------------------------------------
+# Step 5 — Persist the full debate trail
 # ---------------------------------------------------------------------------
 
 _final_state = {
