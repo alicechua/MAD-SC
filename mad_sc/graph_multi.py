@@ -69,9 +69,9 @@ def compile_multi_round_graph(
     ----------
     num_rounds:
         Number of rebuttal rounds AFTER the opening exchange.
-        - ``0``: opening statements only (Support + Refuse, no rebuttals) → judge.
-        - ``1``: opening + 1 rebuttal round each → judge.
-        - ``N``: opening + N rebuttal rounds each → judge.
+        - ``0``: opening statements only (Support + Refuse, no rebuttals) → closing → judge.
+        - ``1``: opening + 1 rebuttal round each → closing → judge.
+        - ``N``: opening + N rebuttal rounds each → closing → judge.
     use_grounding:
         When True, runs the BERT-based grounding node before the opening round.
         The ``grounding_block`` is then available to all team nodes (opening + rebuttal).

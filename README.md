@@ -8,6 +8,8 @@ A LangGraph-based agentic pipeline that classifies **diachronic semantic change*
 
 ## Overview
 
+![Agentic Workflow](image/agentic-workflow-diagram.png)
+
 Static embedding methods quantify *that* a word shifted without explaining *how* or *why*. MAD-SC addresses this by framing change classification as a structured debate backed by historical corpus evidence:
 
 1. **Lexicographer Agent** *(optional)* — consults OED dated quotations and Wiktionary etymology to produce a **Definition Dossier**: historical sense, modern sense, estimated shift year, and mechanism. Anchors both debate teams to etymological ground truth before the debate begins.
@@ -80,6 +82,20 @@ Round 0 (opening, parallel):
 | `rebuttal_support` | Reads opponent's last argument; writes a direct counter (multi-round only) | `arg_change`, `debate_history` |
 | `rebuttal_refuse` | Reads opponent's last argument; writes a direct counter (multi-round only) | `arg_stable`, `debate_history` |
 | `judge` | Two-stage coarse→fine verdict from both arguments | `verdict` |
+
+### Team Agent Tools
+
+Both debate team nodes (`team_support`, `team_refuse`) and their rebuttal counterparts have access to three external tools via Automatic Function Calling (AFC). The LLM decides autonomously whether and when to call them before writing its argument (up to 5 tool-call rounds per node invocation). Tools are disabled by default in the eval harness (`--no-tools`) and can be enabled via `USE_TOOLS=true` in `.env`.
+
+| Tool | Signature | Purpose |
+|---|---|---|
+| `wikipedia_search` | `wikipedia_search(query: str)` | Fetches a Wikipedia article summary (1–3 paragraphs). Use to ground arguments in historical context — cultural movements, technological inventions, or social events that may have driven a word's shift. Falls back to the Wikipedia Search API if a direct title lookup fails. |
+| `wordnet_query` | `wordnet_query(word: str, pos: str = "n")` | Queries WordNet for synsets, definitions, hypernym chains (up to 3 levels), and direct hyponyms (up to 6). Use to prove or disprove Generalization (hypernym evidence) or Specialization (hyponym evidence). Supports `n` / `v` / `a` / `r` POS tags. |
+| `ngram_frequency` | `ngram_frequency(word: str, start_year: int, end_year: int)` | Retrieves Google Books Ngram frequency data over a time window. Returns peak decade, min/max frequency, decade-level averages, and the largest single-year usage spike. Use to show whether a new sense was adopted by the speech community at a datable point in time. |
+
+**When tools are enabled**, each team agent runs a tool-calling loop before writing its argument: the model issues tool calls, receives results as `ToolMessage` objects, and may issue further calls (up to 5 rounds) before producing its final argument. All tool calls and results are logged to `tool_calls_support` / `tool_calls_refuse` in `GraphState` for inspection.
+
+> **Note**: Run 13 found that enabling tools *hurt* accuracy (−12pp fine vs Run 12). The tools introduce noise — agents sometimes over-index on Wikipedia summaries rather than the corpus evidence. Tool-calling is kept as an optional feature for experimentation.
 
 ### Lexicographer Agent — OED Data Pipeline
 
@@ -290,15 +306,16 @@ python main.py attack_nn --mode multi --rounds 3
 python main.py attack_nn --mode multi   # defaults to 3 rounds
 ```
 
-**CLI flags:**
+**`main.py` flags:**
 
-| Flag | Description |
-|---|---|
-| `word` | Target word, e.g. `edge_nn`. Defaults to first entry in `targets.txt`. |
-| `--mode single\|multi` | Debate mode. `single` (default): parallel opening statements. `multi`: sequential rebuttal rounds. |
-| `--rounds N` | Number of rebuttal rounds for `--mode multi` (default: 3). Ignored in single mode. |
-| `--grounding` | Enable pre-debate BERT grounding. |
-| `--no-grounding` | Disable pre-debate BERT grounding. |
+| Flag | Default | Description |
+|---|---|---|
+| `word` | first in `targets.txt` | Target word, e.g. `edge_nn`. |
+| `--mode single\|multi` | `single` | Debate mode. `single`: teams argue in parallel. `multi`: sequential rebuttal rounds where each team reads and counters the opponent's latest argument. |
+| `--rounds N` | `3` | Number of rebuttal rounds for `--mode multi`. Ignored in single mode. |
+| `--grounding` / `--no-grounding` | env `USE_GROUNDING` | Enable/disable pre-debate BERT grounding. |
+
+The Lexicographer Agent and external tool-calling for `main.py` are controlled via `.env` (`USE_LEXICOGRAPHER=true/false`, `USE_TOOLS=true/false`).
 
 ### Evaluation scripts
 
@@ -308,9 +325,36 @@ source .venv/bin/activate
 # Evaluate against SemEval-2020 Task 1 binary ground truth
 python scripts/evaluate_semeval.py --output eval_results/
 
-# Evaluate against LSC-CTD benchmark (Change Type + Causal Driver)
-python scripts/evaluate_lsc.py --output eval_results/
+# Evaluate all 25 LSC-CTD :engl words (default settings)
+python scripts/evaluate_lsc.py --output-dir eval_results/ --lexicographer --no-grounding
+
+# Resume an interrupted run
+python scripts/evaluate_lsc.py --output-dir eval_results/ --lexicographer --no-grounding --resume
+
+# Evaluate specific words only
+python scripts/evaluate_lsc.py --words corn horn bead --output-dir eval_results_test/
+
+# Multi-round rebuttal mode with Lexicographer Agent
+python scripts/evaluate_lsc.py --mode multi --rounds 3 --lexicographer --no-grounding --output-dir eval_results_multi/
 ```
+
+**`evaluate_lsc.py` flags:**
+
+| Flag | Default | Description |
+|---|---|---|
+| `--output-dir DIR` | `eval_results/` | Directory for per-word JSON traces and summary CSV. |
+| `--words WORD ...` | all 25 | Evaluate a subset of words, e.g. `--words corn horn bead`. |
+| `--mode single\|multi` | `single` | Debate mode. `single`: teams argue in parallel. `multi`: sequential rebuttal rounds. |
+| `--rounds N` | `3` | Number of rebuttal rounds for `--mode multi`. |
+| `--lexicographer` | env `USE_LEXICOGRAPHER` | Enable the Lexicographer Agent (Definition Dossier via OED/Wiktionary). |
+| `--no-lexicographer` | — | Disable the Lexicographer Agent. |
+| `--grounding` | env `USE_GROUNDING` | Enable pre-debate BERT grounding (SED/TD signal injected into prompts). |
+| `--no-grounding` | — | Disable BERT grounding. Recommended — adds latency with no consistent accuracy gain. |
+| `--no-tools` | off | Disable external tool-calling (Wikipedia, WordNet, Ngrams) for debate team agents. |
+| `--resume` | off | Skip words that already have a successful trace in `--output-dir`. Use to continue after quota errors. |
+| `--delay SECONDS` | `2.0` | Pause between pipeline invocations (API rate-limit politeness). Use `6` for standard runs, `8` with `gemini-2.5-flash` judge. |
+| `--context-json PATH` | `data/lsc_context_data_engl.json` | Path to LSC-CTD corpus context data. |
+| `--ground-truth PATH` | `data/LSC-CTD/blank_dataset.tsv` | Path to LSC-CTD ground truth TSV. |
 
 ---
 

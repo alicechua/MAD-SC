@@ -17,13 +17,67 @@ import time
 
 from typing import Any
 from dotenv import load_dotenv
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 from typing import Literal
 
 from mad_sc.etymology import fetch_etymology_context, format_etymology_context_for_prompt
 from mad_sc.state import EtymologyResult, GraphState, JudgeVerdict
+from mad_sc.tools import ngram_frequency, wikipedia_search, wordnet_query
+
+TEAM_TOOLS = [wikipedia_search, wordnet_query, ngram_frequency]
+
+_TOOL_DISPATCH = {
+    "wikipedia_search": wikipedia_search,
+    "wordnet_query": wordnet_query,
+    "ngram_frequency": ngram_frequency,
+}
+
+
+def _run_tool(tool_call: dict) -> str:
+    """Execute a single tool call and return its string result."""
+    fn = _TOOL_DISPATCH.get(tool_call["name"])
+    if fn is None:
+        return f"Unknown tool: {tool_call['name']}"
+    try:
+        return fn.invoke(tool_call["args"])
+    except Exception as e:
+        return f"Tool error ({tool_call['name']}): {e}"
+
+
+def _tool_loop(llm_with_tools, messages, max_rounds: int = 5, agent_tag: str = "AGENT"):
+    """Run an LLM + tool-calling loop until the model stops requesting tools.
+
+    Returns the final AIMessage (no tool_calls) after executing any
+    intermediate tool calls and feeding results back as ToolMessages.
+    Caps at *max_rounds* tool-call rounds to prevent runaway loops.
+
+    Logs each tool call and its result to stdout using the bracketed tag format
+    (e.g. ``[TEAM-SUPPORT] wikipedia_search('streaming media') → 312 chars``).
+    Returns a ``_tool_calls`` attribute on the response containing a list of
+    ``{"tool": name, "args": args, "result": result}`` dicts for downstream logging.
+    """
+    all_tool_calls: list[dict] = []
+
+    for _ in range(max_rounds):
+        response = _robust_invoke(llm_with_tools, messages)
+        tool_calls = getattr(response, "tool_calls", None)
+        if not tool_calls:
+            response._tool_calls = all_tool_calls
+            return response
+        messages.append(response)
+        for tc in tool_calls:
+            result = _run_tool(tc)
+            args_repr = ", ".join(f"{k}={v!r}" for k, v in tc["args"].items())
+            print(f"[{agent_tag}] {tc['name']}({args_repr}) → {len(result)} chars")
+            all_tool_calls.append({"tool": tc["name"], "args": tc["args"], "result": result})
+            messages.append(ToolMessage(content=result, tool_call_id=tc["id"]))
+
+    # Final call after exhausting rounds
+    response = _robust_invoke(llm_with_tools, messages)
+    response._tool_calls = all_tool_calls
+    return response
 
 load_dotenv()
 
@@ -417,87 +471,86 @@ def lexicographer_node(state: GraphState) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
-def _extract_text(content: Any) -> str:
-    """Normalise LLM response content to a plain string.
-
-    Gemini can return either a bare string or a list of content-block dicts
-    (``[{"type": "text", "text": "…"}]``).  Both are handled transparently.
-    """
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict) and "text" in item:
-                parts.append(item["text"])
-            elif hasattr(item, "text"):
-                parts.append(item.text)
-        return "\n".join(parts)
-    return str(content)
-
-
-def _format_debate_history(debate_history: list[dict]) -> str:
-    """Render all rounds of the debate history as readable text for the judge."""
-    if not debate_history:
-        return "(no debate history available)"
-    blocks: list[str] = []
-    for entry in debate_history:
-        r = entry.get("round", "?")
-        arg_c = _extract_text(entry.get("arg_change", ""))
-        arg_s = _extract_text(entry.get("arg_stable", ""))
-        if arg_c:
-            blocks.append(f"=== Round {r} — Team Support ===\n{arg_c}")
-        if arg_s:
-            blocks.append(f"=== Round {r} — Team Refuse ===\n{arg_s}")
-    return "\n\n".join(blocks)
-
-
-# ---------------------------------------------------------------------------
 # Team Support Node
 # ---------------------------------------------------------------------------
 
 _SUPPORT_SYSTEM = """You are a computational linguist on **Team Support**.
-Your goal is to determine whether the target word has undergone genuine diachronic
-semantic change, and argue for change only if the corpus evidence supports it.
+Your sole mission is to build the strongest possible argument that the target word
+has undergone genuine *diachronic* semantic change between the two time periods.
+
+STRICT RULES
+------------
+- Use ONLY the provided corpus sentences. Do NOT cite dictionaries, etymologies,
+  historical background knowledge, or any source outside the given sentences.
+- Argue for change only if you can show at least two NEW sentences the OLD sense
+  cannot comfortably explain.
+- The following do NOT constitute semantic change on their own: topic/subject shifts,
+  register changes, new collocations, or changes in cultural salience alone.
 
 Requirements
 ------------
 1. Identify specific sentences from the NEW period whose semantics are **incompatible**
    with the dominant meaning established in the OLD period.
-2. Classify the shift into EXACTLY ONE Change Type from Blank's taxonomy:
-   - **Metaphor**: meaning extended via conceptual *similarity* (resemblance across domains).
-   - **Metonymy**: meaning shifted via *contiguity* or *association* (part-for-whole, cause-for-effect, container-for-content).
-   - **Analogy**: meaning extended via structural resemblance across semantic domains.
-   - **Generalization**: scope *broadened* to cover a wider range of referents.
-   - **Specialization**: scope *narrowed* to a specific domain or subset.
-   - **Ellipsis**: a compound phrase shortened; meaning transferred to the head noun alone (e.g. "motor car" → "car").
-   - **Antiphrasis**: meaning shifted to its *opposite* through ironic or euphemistic usage.
-   - **Auto-Antonym**: word acquired a sense directly *opposite* to its original meaning.
-   - **Synecdoche**: part-for-whole or whole-for-part meaning transfer.
+2. Classify the shift in TWO STEPS:
+
+   **Step A — Coarse category** (pick EXACTLY ONE):
+     - **Generalization**: referential scope *broadened* to cover more referents.
+     - **Specialization**: referential scope *narrowed* to a specific domain or subset.
+     - **Co-hyponymous Transfer**: meaning shifted to a related but distinct concept
+       at the same level of abstraction (via resemblance, association, shortening, etc.).
+
+   **Step B — Fine-grained mechanism** (pick EXACTLY ONE):
+     - If Generalization → type = **Generalization** (no further subdivision).
+     - If Specialization → type = **Specialization** (no further subdivision).
+     - If Co-hyponymous Transfer, identify the specific mechanism:
+       - **Metaphor**     – extended via conceptual *similarity* across domains.
+       - **Metonymy**     – shifted via *contiguity* or association (part-whole, cause-effect).
+       - **Analogy**      – extended via structural resemblance across semantic domains.
+       - **Ellipsis**     – compound phrase shortened; meaning inherited by the head noun.
+       - **Antiphrasis**  – shifted to its *opposite* through ironic/euphemistic usage.
+       - **Auto-Antonym** – acquired a sense directly *opposite* to its original meaning.
+       - **Synecdoche**   – part-for-whole or whole-for-part meaning transfer.
+
 3. Hypothesize EXACTLY ONE Causal Driver:
    - **Cultural Shift**: driven by broad societal, technological, or cultural changes.
-   - **Linguistic Drift**: driven by internal linguistic processes (metaphor, metonymy, analogy)."""
+   - **Linguistic Drift**: driven by internal linguistic processes (metaphor, metonymy, analogy).
 
-_SUPPORT_USER = """Analyze the word "{word}" (used as a {word_type}) for diachronic semantic change.
+Be specific, cite corpus evidence directly, and construct a compelling argument.
 
-SENTENCES FROM {t_old} (OLD period):
+Available Tools
+---------------
+- wikipedia_search(query): Look up historical context for cultural or technological events \
+that may have driven a causal shift (e.g. "history of streaming media").
+- wordnet_query(word, pos): Retrieve hypernyms and hyponyms to classify Generalization or \
+Specialization (e.g. show the word's hypernym class broadened or narrowed).
+- ngram_frequency(word, start_year, end_year): Check Google Books frequency trends to \
+demonstrate when a new sense spiked in the written record.
+Use these tools strategically before or while building your argument."""
+
+_SUPPORT_USER = """Analyze the semantic change of the word: "{word}" (used as a {word_type})
+
+SENTENCES FROM {t_old}:
 {sentences_old}
 
 SENTENCES FROM {t_new} (NEW period):
 {sentences_new}
 
-Build Arg_change — your argument that a genuine semantic shift has occurred between \
-{t_old} and {t_new}. Cite specific sentence evidence, name the Change Type from \
-Blank's taxonomy (Metaphor / Metonymy / Analogy / Generalization / Specialization / \
-Ellipsis / Antiphrasis / Auto-Antonym / Synecdoche), and identify the Causal Driver."""
+Structure your Arg_change as follows:
+1. **OLD dominant sense** — from OLD sentences only; name 1–2 core semantic features.
+2. **Evidence for change** — quote 2–3 NEW sentences and explain, feature by feature,
+   why the OLD sense does not fully account for them.
+3. **Best counterevidence** — quote 1–2 sentences that appear to continue the OLD sense;
+   explain why they do not undermine your claim.
+4. **Why this is not topic/register/polysemy** — a specific, evidence-based explanation.
+5. **Step A coarse category + Step B fine-grained mechanism** (from your system prompt taxonomy)
+6. **Causal Driver**
+7. **Confidence: NN/100**"""
 
 
 def team_support_node(state: GraphState) -> dict:
     """Team Support: constructs Arg_change arguing for semantic shift."""
     llm = _get_llm()
+    llm_with_tools = llm.bind_tools(TEAM_TOOLS)
 
     sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
     sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
@@ -506,23 +559,25 @@ def team_support_node(state: GraphState) -> dict:
     dossier = state.get("lexicographer_dossier", "") or ""
     system_content = f"{dossier}\n\n{_SUPPORT_SYSTEM}" if dossier else _SUPPORT_SYSTEM
 
-    response = _robust_invoke(
-        llm,
-        [
-            SystemMessage(content=system_content),
-            HumanMessage(
-                content=_SUPPORT_USER.format(
-                    word=state["word"],
-                    word_type=state.get("word_type", "word"),
-                    t_old=state["t_old"],
-                    t_new=state["t_new"],
-                    sentences_old=sentences_old,
-                    sentences_new=sentences_new,
-                )
-            ),
-        ]
-    )
-    return {"arg_change": _extract_text(response)}
+    messages = [
+        SystemMessage(content=system_content),
+        HumanMessage(
+            content=_SUPPORT_USER.format(
+                word=state["word"],
+                word_type=state.get("word_type", "word"),
+                t_old=state["t_old"],
+                t_new=state["t_new"],
+                sentences_old=sentences_old,
+                sentences_new=sentences_new,
+            )
+        ),
+    ]
+    if os.getenv("USE_TOOLS", "true").lower() == "false":
+        response = _robust_invoke(llm, messages)
+        response._tool_calls = []
+    else:
+        response = _tool_loop(llm_with_tools, messages, agent_tag="TEAM-SUPPORT")
+    return {"arg_change": _extract_text(response), "tool_calls_support": getattr(response, "_tool_calls", [])}
 
 
 # ---------------------------------------------------------------------------
@@ -533,15 +588,21 @@ _REFUSE_SYSTEM = """You are a computational linguist on **Team Refuse**.
 Your goal is to determine whether the target word is semantically stable, and argue
 for stability only if the corpus evidence supports it.
 
-Requirements
-------------
-1. Identify sentences from the NEW period that **align perfectly** with the core
-   meaning established in the OLD period.
-2. Argue that any apparently new usages represent **situational polysemy** —
-   context-dependent senses that do not constitute a fundamental shift in the word's
-   core semantic content.
-3. Demonstrate continuity of the word's primary prototypical meaning across periods.
-4. Pre-emptively counter broadening/narrowing/transfer claims by showing stable semantic features."""
+STRICT RULES — the judge will penalise violations:
+1. Use ONLY the provided corpus sentences. Do NOT cite dictionaries, etymologies,
+   historical background knowledge, or any source outside the given sentences.
+2. Identify the OLD core sense from OLD sentences alone; explicitly name its key
+   semantic features (e.g., [+animate], [+physical], [+bounded]).
+3. For every apparently novel NEW use, you MUST:
+   a. Name the shared semantic feature(s) present in BOTH the old and new usage.
+   b. Point to at least one OLD sentence that already licenses that feature.
+4. "Situational polysemy" is a valid defence only when you supply (3a) and (3b).
+   Merely asserting "situational polysemy" without evidence is not acceptable.
+5. Do NOT ignore Team Support's strongest evidence — address it directly.
+6. If a NEW use genuinely introduces a referent class or semantic feature absent
+   from the OLD corpus, acknowledge it as serious counterevidence rather than
+   dismissing it.
+7. End with a CONFIDENCE score (0–100) reflecting your honest appraisal."""
 
 _REFUSE_USER = """Analyze the word "{word}" (used as a {word_type}) for semantic stability.
 
@@ -566,6 +627,7 @@ Structure your Arg_stable as follows:
 def team_refuse_node(state: GraphState) -> dict:
     """Team Refuse: constructs Arg_stable arguing for semantic stability."""
     llm = _get_llm()
+    llm_with_tools = llm.bind_tools(TEAM_TOOLS)
 
     sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
     sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
@@ -574,23 +636,25 @@ def team_refuse_node(state: GraphState) -> dict:
     dossier = state.get("lexicographer_dossier", "") or ""
     system_content = f"{dossier}\n\n{_REFUSE_SYSTEM}" if dossier else _REFUSE_SYSTEM
 
-    response = _robust_invoke(
-        llm,
-        [
-            SystemMessage(content=system_content),
-            HumanMessage(
-                content=_REFUSE_USER.format(
-                    word=state["word"],
-                    word_type=state.get("word_type", "word"),
-                    t_old=state["t_old"],
-                    t_new=state["t_new"],
-                    sentences_old=sentences_old,
-                    sentences_new=sentences_new,
-                )
-            ),
-        ]
-    )
-    return {"arg_stable": _extract_text(response)}
+    messages = [
+        SystemMessage(content=system_content),
+        HumanMessage(
+            content=_REFUSE_USER.format(
+                word=state["word"],
+                word_type=state.get("word_type", "word"),
+                t_old=state["t_old"],
+                t_new=state["t_new"],
+                sentences_old=sentences_old,
+                sentences_new=sentences_new,
+            )
+        ),
+    ]
+    if os.getenv("USE_TOOLS", "true").lower() == "false":
+        response = _robust_invoke(llm, messages)
+        response._tool_calls = []
+    else:
+        response = _tool_loop(llm_with_tools, messages, agent_tag="TEAM-REFUSE")
+    return {"arg_stable": _extract_text(response), "tool_calls_refuse": getattr(response, "_tool_calls", [])}
 
 
 # ---------------------------------------------------------------------------
@@ -675,11 +739,14 @@ Output ONLY valid JSON matching the schema provided.\
 _JUDGE_COARSE_USER = """\
 Evaluate the debate about the word "{word}" ({t_old} vs. {t_new}).
 
---- ARGUMENT FOR CHANGE ---
+--- FINAL ARGUMENT FOR CHANGE (Team Support) ---
 {arg_change}
 
---- ARGUMENT FOR STABILITY ---
+--- FINAL ARGUMENT FOR STABILITY (Team Refuse) ---
 {arg_stable}
+
+If a full debate transcript is provided below, weigh the cumulative strength of \
+evidence across ALL rounds — not just the final arguments above.
 
 Which COARSE category best describes the semantic trajectory? \
 Output ONLY a valid JSON object.\
@@ -817,11 +884,16 @@ Diagnostic checklist (work through before classifying)
 
 Verdict rules
 -------------
-- Weigh the COMPARATIVE QUALITY of evidence, not the volume.
-- If the evidence for change outweighs stability: verdict = "CHANGE DETECTED".
-  Supply change_type (from the taxonomy above), causal_driver, and break_point_year.
-- Otherwise: verdict = "STABLE". Set change_type, causal_driver, and break_point_year to null.
-- Always work through the diagnostic checklist before choosing change_type.
+1. Weigh EVIDENCE QUALITY, not rhetorical volume or which team sounded more confident.
+2. Discount arguments based on topic/register/domain shifts alone — those do not
+   constitute semantic change unless accompanied by a loss or gain of core semantic
+   features or a genuinely new referent class.
+3. Discount "situational polysemy" defences that assert continuity without naming the
+   shared semantic feature or citing an OLD-period analogue for the allegedly new use.
+4. If evidence for change outweighs stability: verdict = "CHANGE DETECTED".
+   Supply change_type (from the taxonomy above), causal_driver, and break_point_year.
+5. Otherwise: verdict = "STABLE". Set change_type, causal_driver, break_point_year to null.
+6. Always work through the diagnostic checklist before choosing change_type.
 
 IMPORTANT: You MUST output a valid JSON object matching this schema exactly:
 {
@@ -868,7 +940,6 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
         f"{lexicographer_dossier}\n\n{_JUDGE_COARSE_SYSTEM}"
         if lexicographer_dossier else _JUDGE_COARSE_SYSTEM
     )
-    
     if debate_history and num_rounds > 1:
         history_text = _format_debate_history(debate_history)
         user_prompt = _JUDGE_MULTI_USER.format(
@@ -918,19 +989,21 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
 def _run_transfer_stage(word: str, t_old: str, t_new: str,
                         arg_change: str, arg_stable: str,
                         coarse_reasoning: str,
-                        lexicographer_dossier: str = "") -> JudgeVerdict:
+                        lexicographer_dossier: str = "",
+                        debate_history_text: str = "") -> JudgeVerdict:
     """Stage 2: identify exact Transfer mechanism."""
     transfer_system = (
         f"{lexicographer_dossier}\n\n{_JUDGE_TRANSFER_SYSTEM}"
         if lexicographer_dossier else _JUDGE_TRANSFER_SYSTEM
     )
+    history_section = f"\n\n{debate_history_text}" if debate_history_text else ""
     messages = [
         SystemMessage(content=transfer_system),
         HumanMessage(content=_JUDGE_TRANSFER_USER.format(
             word=word, t_old=t_old, t_new=t_new,
             arg_change=arg_change, arg_stable=arg_stable,
             coarse_reasoning=coarse_reasoning,
-        )),
+        ) + history_section),
     ]
     try:
         llm = _get_judge_llm(temperature=0.2).with_structured_output(JudgeVerdict)
@@ -947,6 +1020,33 @@ def _run_transfer_stage(word: str, t_old: str, t_new: str,
     verdict = _parse_verdict_from_text(word, _extract_text(resp))
     print(f"[JUDGE-S2-fallback] '{word}' → {verdict.change_type}")
     return verdict
+
+
+def _format_debate_history(debate_history: list) -> str:
+    """Format the full multi-round debate transcript for the judge."""
+    if not debate_history:
+        return ""
+    lines = ["=== FULL DEBATE TRANSCRIPT (all rounds) ==="]
+    for entry in debate_history:
+        rnd = entry.get("round", "?")
+        label = "Opening" if rnd == 0 else f"Rebuttal Round {rnd}"
+        lines.append(f"\n--- {label} ---")
+        lines.append(f"[Team Support]\n{entry.get('arg_change', '(none)')}")
+        lines.append(f"\n[Team Refuse]\n{entry.get('arg_stable', '(none)')}")
+    lines.append("\n=== END TRANSCRIPT ===")
+    return "\n".join(lines)
+
+
+# Full-transcript user template for multi-round debates (used by callers that want to
+# construct the judge prompt directly; the two-stage pipeline uses debate_history_text).
+_JUDGE_MULTI_USER = """Evaluate the complete {num_rounds}-round debate about the word \
+"{word}" (used as a {word_type}), {t_old} vs. {t_new}.
+
+{history}
+
+The closing statements represent each team's final position after reading all of \
+the rebuttals. Base your verdict on the full transcript above, not just \
+the final round. Apply the verdict rules in your system prompt strictly."""
 
 
 def judge_node(state: GraphState) -> dict:
@@ -1021,7 +1121,10 @@ This is a REBUTTAL round. Rules:
    specific corpus sentence that contradicts their claimed continuity.
 3. Do NOT merely reassert your opening claim — advance the argument with new evidence
    or a tighter feature-level analysis.
-4. Restate Change Type and Causal Driver concisely at the end.
+4. Restate your Step A coarse category + Step B fine-grained mechanism and Causal Driver
+   concisely at the end. Taxonomy recap:
+     Step A: Generalization | Specialization | Co-hyponymous Transfer
+     Step B (if Transfer): Metaphor / Metonymy / Analogy / Ellipsis / Antiphrasis / Auto-Antonym / Synecdoche
 5. Focus on whether core semantic FEATURES have changed, not just topics or contexts."""
 
 _REBUTTAL_SUPPORT_USER = """Rebuttal round {current_round} of {num_rounds}.

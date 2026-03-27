@@ -511,6 +511,24 @@ def main():
         action="store_false",
         help="Disable Lexicographer Agent. Overrides USE_LEXICOGRAPHER env var.",
     )
+    parser.add_argument(
+        "--no-tools",
+        action="store_true",
+        default=False,
+        help="Disable external tool-calling for team debate agents (sets USE_TOOLS=false).",
+    )
+    parser.add_argument(
+        "--multi-round",
+        action="store_true",
+        default=False,
+        help="Use multi-round rebuttal graph instead of single-round (compile_multi_round_graph).",
+    )
+    parser.add_argument(
+        "--num-rounds",
+        type=int,
+        default=3,
+        help="Number of rebuttal rounds after the opening exchange (default: 3). Only used with --multi-round.",
+    )
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
@@ -533,6 +551,9 @@ def main():
     # ------------------------------------------------------------------
     # 2. Compile pipeline graph
     # ------------------------------------------------------------------
+    if args.no_tools:
+        os.environ["USE_TOOLS"] = "false"
+        log.info("Tool-calling disabled for team agents (USE_TOOLS=false)")
     mode = args.mode
     num_rounds = max(1, args.rounds)
 
