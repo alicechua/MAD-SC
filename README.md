@@ -83,6 +83,20 @@ Round 0 (opening, parallel):
 | `rebuttal_refuse` | Reads opponent's last argument; writes a direct counter (multi-round only) | `arg_stable`, `debate_history` |
 | `judge` | Two-stage coarse→fine verdict from both arguments | `verdict` |
 
+### Team Agent Tools
+
+Both debate team nodes (`team_support`, `team_refuse`) and their rebuttal counterparts have access to three external tools via Automatic Function Calling (AFC). The LLM decides autonomously whether and when to call them before writing its argument (up to 5 tool-call rounds per node invocation). Tools are disabled by default in the eval harness (`--no-tools`) and can be enabled via `USE_TOOLS=true` in `.env`.
+
+| Tool | Signature | Purpose |
+|---|---|---|
+| `wikipedia_search` | `wikipedia_search(query: str)` | Fetches a Wikipedia article summary (1–3 paragraphs). Use to ground arguments in historical context — cultural movements, technological inventions, or social events that may have driven a word's shift. Falls back to the Wikipedia Search API if a direct title lookup fails. |
+| `wordnet_query` | `wordnet_query(word: str, pos: str = "n")` | Queries WordNet for synsets, definitions, hypernym chains (up to 3 levels), and direct hyponyms (up to 6). Use to prove or disprove Generalization (hypernym evidence) or Specialization (hyponym evidence). Supports `n` / `v` / `a` / `r` POS tags. |
+| `ngram_frequency` | `ngram_frequency(word: str, start_year: int, end_year: int)` | Retrieves Google Books Ngram frequency data over a time window. Returns peak decade, min/max frequency, decade-level averages, and the largest single-year usage spike. Use to show whether a new sense was adopted by the speech community at a datable point in time. |
+
+**When tools are enabled**, each team agent runs a tool-calling loop before writing its argument: the model issues tool calls, receives results as `ToolMessage` objects, and may issue further calls (up to 5 rounds) before producing its final argument. All tool calls and results are logged to `tool_calls_support` / `tool_calls_refuse` in `GraphState` for inspection.
+
+> **Note**: Run 13 found that enabling tools *hurt* accuracy (−12pp fine vs Run 12). The tools introduce noise — agents sometimes over-index on Wikipedia summaries rather than the corpus evidence. Tool-calling is kept as an optional feature for experimentation.
+
 ### Lexicographer Agent — OED Data Pipeline
 
 The Lexicographer Agent fetches real corpus evidence before synthesising definitions:
