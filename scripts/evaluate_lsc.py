@@ -109,6 +109,9 @@ LABEL_ALIASES: dict[str, str] = {
     "synecdoche": "Synecdoche",
 }
 
+# Break-point year ground truth (subset of words with datable shifts)
+BREAK_POINT_YEARS_JSON = PROJECT_ROOT / "data" / "break_point_years.json"
+
 # Pipeline timeout per word (seconds)
 PIPELINE_TIMEOUT = 120
 
@@ -348,11 +351,139 @@ def compute_metrics(
         return {"accuracy": acc}
 
 
+def compute_calibration(records: list[dict]) -> dict:
+    """Compute Expected Calibration Error (ECE) across 5 confidence bins.
+
+    Requires each record to have 'pipeline_result' with a 'verdict' dict
+    containing a 'confidence' float field. Records missing confidence are skipped.
+
+    Returns a dict with per-bin stats and the overall ECE.
+    """
+    NUM_BINS = 5
+    bins: list[list] = [[] for _ in range(NUM_BINS)]
+
+    for r in records:
+        verdict = (r.get("pipeline_result") or {}).get("verdict") or {}
+        conf = verdict.get("confidence")
+        if conf is None:
+            continue
+        conf = float(conf)
+        correct_fine = r.get("ground_truth_type") == r.get("predicted_type")
+        bin_idx = min(int(conf * NUM_BINS), NUM_BINS - 1)
+        bins[bin_idx].append((conf, int(correct_fine)))
+
+    bin_stats = []
+    ece = 0.0
+    total = sum(len(b) for b in bins)
+    for i, b in enumerate(bins):
+        if not b:
+            bin_stats.append(None)
+            continue
+        mean_conf = sum(c for c, _ in b) / len(b)
+        mean_acc = sum(a for _, a in b) / len(b)
+        gap = abs(mean_conf - mean_acc)
+        ece += gap * len(b) / total if total > 0 else 0
+        bin_stats.append({
+            "bin": f"{i/NUM_BINS:.1f}–{(i+1)/NUM_BINS:.1f}",
+            "count": len(b),
+            "mean_confidence": round(mean_conf, 3),
+            "mean_accuracy": round(mean_acc, 3),
+            "gap": round(gap, 3),
+        })
+
+    return {"ece": round(ece, 4), "num_bins": NUM_BINS, "bins": bin_stats}
+
+
+def compute_break_point_year_metrics(
+    records: list[dict],
+    bp_years_path: Path = BREAK_POINT_YEARS_JSON,
+    within_decade: int = 10,
+) -> dict | None:
+    """Compare predicted break_point_year against curated ground truth.
+
+    Only evaluates words present in the ground truth JSON. Returns None if
+    the file doesn't exist or no predictions overlap.
+
+    Metrics:
+        mae               – Mean Absolute Error in years
+        within_decade_acc – Fraction with |pred - true| <= within_decade
+        per_word          – List of per-word details
+    """
+    if not bp_years_path.exists():
+        log.warning("Break-point year ground truth not found: %s", bp_years_path)
+        return None
+
+    with open(bp_years_path, encoding="utf-8") as f:
+        gt = json.load(f)
+    # Remove the comment key
+    gt = {k: v for k, v in gt.items() if not k.startswith("_")}
+
+    per_word = []
+    for r in records:
+        word = r["word"]
+        if word not in gt:
+            continue
+        pred_year = (r.get("pipeline_result") or {}).get("verdict") or {}
+        pred_year = pred_year.get("break_point_year")
+        true_year = gt[word]["year"]
+        if pred_year is None:
+            per_word.append({
+                "word": word, "true_year": true_year,
+                "pred_year": None, "abs_error": None, "within_decade": False,
+            })
+        else:
+            err = abs(int(pred_year) - true_year)
+            per_word.append({
+                "word": word, "true_year": true_year,
+                "pred_year": int(pred_year), "abs_error": err,
+                "within_decade": err <= within_decade,
+            })
+
+    if not per_word:
+        return None
+
+    errors = [p["abs_error"] for p in per_word if p["abs_error"] is not None]
+    mae = sum(errors) / len(errors) if errors else None
+    wd_acc = sum(1 for p in per_word if p["within_decade"]) / len(per_word)
+
+    return {
+        "num_words_evaluated": len(per_word),
+        "mae": round(mae, 1) if mae is not None else None,
+        "within_decade_accuracy": round(wd_acc, 3),
+        "per_word": per_word,
+    }
+
+
 def coarsen(label: Optional[str]) -> str:
     """Map a fine-grained label to the coarse 3-class scheme."""
     if label is None:
         return "UNKNOWN"
     return COARSE_MAP.get(label, "UNKNOWN")
+
+
+def _compute_error_mode(
+    ground_truth: str,
+    predicted: Optional[str],
+    verdict_status: str,
+) -> str:
+    """Categorise a single prediction into one of five error modes.
+
+    Modes:
+        correct                  – fine-grained label matches ground truth
+        false_stable             – pipeline predicted STABLE on a changed word
+        coarse_correct_fine_wrong – coarse category right, fine label wrong
+        coarse_wrong             – both fine and coarse labels wrong
+        error                    – pipeline raised an exception or hit rate limits
+    """
+    if verdict_status == "ERROR":
+        return "error"
+    if predicted is None:
+        return "false_stable"
+    if predicted == ground_truth:
+        return "correct"
+    if coarsen(ground_truth) == coarsen(predicted):
+        return "coarse_correct_fine_wrong"
+    return "coarse_wrong"
 
 
 # ===================================================================
@@ -370,12 +501,18 @@ def save_trace(
     trace_dir = output_dir / "traces"
     trace_dir.mkdir(parents=True, exist_ok=True)
 
+    verdict_obj = result.get("verdict") or {}
+    verdict_status = verdict_obj.get("verdict", "N/A")
+    error_mode = _compute_error_mode(ground_truth_type, predicted_type, verdict_status)
+
     trace = {
         "word": word,
         "ground_truth_type": ground_truth_type,
         "predicted_type": predicted_type,
         "coarse_true": coarsen(ground_truth_type),
         "coarse_pred": coarsen(predicted_type),
+        "error_mode": error_mode,
+        "confidence": verdict_obj.get("confidence"),
         "arg_change": result.get("arg_change", ""),
         "arg_stable": result.get("arg_stable", ""),
         "debate_history": result.get("debate_history", []),
@@ -392,31 +529,51 @@ def save_summary(
     records: list[dict],
     fine_metrics: dict,
     coarse_metrics: dict,
-):
-    """Save the overall evaluation summary to JSON."""
+    calibration: dict | None = None,
+    bp_metrics: dict | None = None,
+) -> dict[str, int]:
+    """Save the overall evaluation summary to JSON.
+
+    Returns a dict of error-mode counts for printing.
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    per_word_rows = []
+    error_mode_counts: dict[str, int] = {}
+    for r in records:
+        predicted = r.get("predicted_type")
+        gt = r["ground_truth_type"]
+        verdict_status = (
+            (r.get("pipeline_result") or {}).get("verdict") or {}
+        ).get("verdict", "N/A")
+        mode = _compute_error_mode(gt, predicted, verdict_status)
+        error_mode_counts[mode] = error_mode_counts.get(mode, 0) + 1
+        per_word_rows.append({
+            "word": r["word"],
+            "ground_truth": gt,
+            "predicted": predicted,
+            "coarse_true": coarsen(gt),
+            "coarse_pred": coarsen(predicted),
+            "correct_fine": gt == predicted,
+            "correct_coarse": coarsen(gt) == coarsen(predicted),
+            "error_mode": mode,
+        })
+
     summary = {
         "timestamp": datetime.now().isoformat(),
         "num_words": len(records),
         "fine_grained_metrics": _serializable(fine_metrics),
         "coarse_grained_metrics": _serializable(coarse_metrics),
-        "per_word": [
-            {
-                "word": r["word"],
-                "ground_truth": r["ground_truth_type"],
-                "predicted": r.get("predicted_type"),
-                "coarse_true": coarsen(r["ground_truth_type"]),
-                "coarse_pred": coarsen(r.get("predicted_type")),
-                "correct_fine": r["ground_truth_type"] == r.get("predicted_type"),
-                "correct_coarse": coarsen(r["ground_truth_type"]) == coarsen(r.get("predicted_type")),
-            }
-            for r in records
-        ],
+        "error_mode_counts": error_mode_counts,
+        "confidence_calibration": _serializable(calibration) if calibration else None,
+        "break_point_year_metrics": _serializable(bp_metrics) if bp_metrics else None,
+        "per_word": per_word_rows,
     }
     path = output_dir / "eval_summary.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
     log.info("Summary saved to %s", path)
+    return error_mode_counts
 
 
 def _serializable(obj):
@@ -652,13 +809,54 @@ def main():
     fine_metrics = compute_metrics(y_true_fine, y_pred_fine, "Fine-grained")
     coarse_metrics = compute_metrics(y_true_coarse, y_pred_coarse, "Coarse-grained")
 
+    # Break-point year validation
+    bp_metrics = compute_break_point_year_metrics(records)
+    if bp_metrics:
+        print(f"\n{'=' * 65}")
+        print("  Break-Point Year Validation")
+        print(f"{'=' * 65}")
+        print(f"  Words evaluated : {bp_metrics['num_words_evaluated']}")
+        print(f"  MAE             : {bp_metrics['mae']} years")
+        print(f"  Within-decade   : {bp_metrics['within_decade_accuracy']:.1%}")
+        print(f"\n  {'Word':<20} {'True':>6} {'Pred':>6} {'Error':>7} {'OK?':>5}")
+        print(f"  {'-' * 48}")
+        for p in bp_metrics["per_word"]:
+            pred_s = str(p["pred_year"]) if p["pred_year"] else "None"
+            err_s = str(p["abs_error"]) if p["abs_error"] is not None else "N/A"
+            ok = "✓" if p["within_decade"] else "✗"
+            print(f"  {p['word']:<20} {p['true_year']:>6} {pred_s:>6} {err_s:>7} {ok:>5}")
+
+    # Confidence calibration (requires confidence field in verdicts)
+    calibration = compute_calibration(records)
+    if calibration["bins"]:
+        print(f"\n{'=' * 65}")
+        print("  Confidence Calibration")
+        print(f"{'=' * 65}")
+        print(f"  {'Bin':<12} {'Count':>6} {'Mean Conf':>10} {'Mean Acc':>9} {'Gap':>6}")
+        for b in calibration["bins"]:
+            if b:
+                print(f"  {b['bin']:<12} {b['count']:>6} {b['mean_confidence']:>10.3f} "
+                      f"{b['mean_accuracy']:>9.3f} {b['gap']:>6.3f}")
+        print(f"\n  Expected Calibration Error (ECE): {calibration['ece']:.4f}")
+
     # ------------------------------------------------------------------
-    # 5. Save summary
+    # 5. Save summary + print error-mode distribution
     # ------------------------------------------------------------------
-    save_summary(args.output_dir, records, fine_metrics, coarse_metrics)
+    error_mode_counts = save_summary(args.output_dir, records, fine_metrics, coarse_metrics,
+                                     calibration=calibration, bp_metrics=bp_metrics)
+
+    print(f"\n{'=' * 65}")
+    print("  Error-Mode Distribution")
+    print(f"{'=' * 65}")
+    mode_order = ["correct", "false_stable", "coarse_correct_fine_wrong", "coarse_wrong", "error"]
+    for mode in mode_order:
+        count = error_mode_counts.get(mode, 0)
+        bar = "#" * count
+        print(f"  {mode:30s} {count:3d}  {bar}")
+    print()
 
     print(f"\nAll results saved to: {args.output_dir}/")
-    print(f"  eval_summary.json  — metrics + per-word results")
+    print(f"  eval_summary.json  — metrics + per-word results + error-mode counts")
     print(f"  traces/            — full pipeline outputs per word")
 
 

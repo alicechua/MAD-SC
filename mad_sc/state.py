@@ -169,6 +169,15 @@ class JudgeVerdict(BaseModel):
             "Null when verdict is STABLE."
         ),
     )
+    confidence: float = Field(
+        default=0.75,
+        description=(
+            "Judge's confidence in the verdict, from 0.0 (pure guess) to 1.0 (certain). "
+            "Base this on the quality and clarity of the corpus evidence, the strength of "
+            "the winning argument, and the degree of disagreement between the teams. "
+            "A close debate with ambiguous evidence warrants ≤0.6; overwhelming evidence warrants ≥0.85."
+        ),
+    )
     reasoning: str = Field(
         description=(
             "Detailed reasoning for the verdict, citing evidence from both "

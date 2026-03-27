@@ -615,6 +615,13 @@ class _CoarseVerdict(BaseModel):
             "  Narrowing  – referential scope narrowed (Specialization)."
         )
     )
+    confidence: float = Field(
+        default=0.75,
+        description=(
+            "Confidence in the coarse category, 0.0–1.0. "
+            "Use ≤0.6 for ambiguous/contested evidence, ≥0.85 for clear-cut cases."
+        ),
+    )
     reasoning: str = Field(description="Brief justification for the coarse category choice.")
 
 
@@ -669,7 +676,8 @@ Decision rules
    ironic inversion, compound shortening) → TRANSFER.
 5. Weigh QUALITY of evidence, not volume.
 
-Output ONLY valid JSON matching the schema provided.\
+Output ONLY valid JSON matching this schema:
+{"coarse_category": "<STABLE|Transfer|Broadening|Narrowing>", "confidence": <0.0-1.0>, "reasoning": "<brief justification>"}\
 """
 
 _JUDGE_COARSE_USER = """\
@@ -770,7 +778,7 @@ Stage 1 reasoning: {coarse_reasoning}
 Now identify the EXACT transfer mechanism (Metaphor / Metonymy / Analogy / Ellipsis / \
 Antiphrasis / Auto-Antonym / Synecdoche). Work through the disambiguation rules, then \
 output ONLY a valid JSON object with: word, verdict ("CHANGE DETECTED"), change_type, \
-causal_driver, break_point_year, reasoning.\
+causal_driver, break_point_year, confidence (0.0-1.0), reasoning.\
 """
 
 
@@ -830,6 +838,7 @@ IMPORTANT: You MUST output a valid JSON object matching this schema exactly:
   "change_type": "<one of the 9 labels above, or null if STABLE>",
   "causal_driver": "Cultural Shift" | "Linguistic Drift" | null,
   "break_point_year": <integer year or null>,
+  "confidence": <float 0.0-1.0 — your confidence in this verdict based on evidence quality>,
   "reasoning": "<your full reasoning>"
 }"""
 
@@ -977,6 +986,7 @@ def judge_node(state: GraphState) -> dict:
             word=word, verdict="STABLE",
             change_type=None, causal_driver=None,
             break_point_year=None,
+            confidence=coarse.confidence if coarse else 0.5,
             reasoning=coarse.reasoning if coarse else "Stage 1 failed; defaulting to STABLE.",
         ).model_dump()}
 
@@ -987,6 +997,7 @@ def judge_node(state: GraphState) -> dict:
             change_type="Generalization",
             causal_driver="Linguistic Drift",
             break_point_year=None,
+            confidence=coarse.confidence,
             reasoning=coarse.reasoning,
         ).model_dump()}
 
@@ -997,6 +1008,7 @@ def judge_node(state: GraphState) -> dict:
             change_type="Specialization",
             causal_driver="Linguistic Drift",
             break_point_year=None,
+            confidence=coarse.confidence,
             reasoning=coarse.reasoning,
         ).model_dump()}
 
@@ -1184,12 +1196,12 @@ def closing_refuse_node(state: GraphState) -> dict:
                     word_type=state.get("word_type", "word"),
                     t_old=state["t_old"],
                     t_new=state["t_new"],
-                    arg_change=_extract_text(state.get("arg_change", "")),
+                    arg_change=state.get("arg_change", ""),
                 )
             ),
         ]
     )
-    closing = response.content
+    closing = _extract_text(response)
 
     history = list(state.get("debate_history", []))
     history.append({"round": "closing", "arg_change": "", "arg_stable": closing})
@@ -1238,12 +1250,12 @@ def closing_support_node(state: GraphState) -> dict:
                     word_type=state.get("word_type", "word"),
                     t_old=state["t_old"],
                     t_new=state["t_new"],
-                    arg_stable=_extract_text(state.get("arg_stable", "")),
+                    arg_stable=state.get("arg_stable", ""),
                 )
             ),
         ]
     )
-    closing = response.content
+    closing = _extract_text(response)
 
     history = list(state.get("debate_history", []))
     if history and history[-1].get("round") == "closing":

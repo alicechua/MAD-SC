@@ -1,0 +1,78 @@
+{
+  "_comment": "Approximate years when each word's semantic shift became dominant usage. Sources: OED, etymonline, historical corpus studies. Only words with reasonably datable breakpoints are included. Within-decade accuracy is used for evaluation (|pred - true| <= 10).",
+  "mouse": {
+    "year": 1984,
+    "source": "OED: first attested 1965 (Engelbart), dominant ~1984 with Mac launch",
+    "change_type": "Metaphor"
+  },
+  "corn": {
+    "year": 1620,
+    "source": "OED: American usage 'maize' documented from early 17c colonial records",
+    "change_type": "Specialization"
+  },
+  "bead": {
+    "year": 1400,
+    "source": "OED: 'prayer' sense obsolete by ~1400; small sphere dominant",
+    "change_type": "Metonymy"
+  },
+  "car": {
+    "year": 1900,
+    "source": "OED: 'motor car' ellipsis dominant ~1900",
+    "change_type": "Ellipsis"
+  },
+  "canine": {
+    "year": 1850,
+    "source": "OED: 'canine tooth' ellipsis dominant mid-19c",
+    "change_type": "Ellipsis"
+  },
+  "bad": {
+    "year": 1970,
+    "source": "Green's Dictionary of Slang: 'bad' = excellent attested from 1950s, mainstream ~1970s",
+    "change_type": "Auto-Antonym"
+  },
+  "fast": {
+    "year": 1300,
+    "source": "OED: 'firmly fixed' → 'swift' transition documented ~1300",
+    "change_type": "Analogy"
+  },
+  "hardly": {
+    "year": 1600,
+    "source": "OED: 'scarcely' sense dominant by early 17c",
+    "change_type": "Analogy"
+  },
+  "horn": {
+    "year": 1600,
+    "source": "OED: musical instrument sense documented from ~1600 via Metonymy from animal horn",
+    "change_type": "Metonymy"
+  },
+  "target": {
+    "year": 1850,
+    "source": "OED: 'goal/objective' sense documented from mid-19c",
+    "change_type": "Metonymy"
+  },
+  "voyage": {
+    "year": 1600,
+    "source": "OED: Narrowed to sea-voyage ~1600 from general 'journey'",
+    "change_type": "Specialization"
+  },
+  "holiday": {
+    "year": 1500,
+    "source": "OED: religious feast day → secular leisure day ~1500",
+    "change_type": "Metonymy"
+  },
+  "humour": {
+    "year": 1700,
+    "source": "OED: bodily fluid sense obsolete; 'funny' sense dominant by ~1700",
+    "change_type": "Metonymy"
+  },
+  "see": {
+    "year": 900,
+    "source": "OED: 'perceive mentally' documented from Old English",
+    "change_type": "Metaphor"
+  },
+  "understand": {
+    "year": 1000,
+    "source": "OED: 'comprehend mentally' from Old English via Metonymy",
+    "change_type": "Metonymy"
+  }
+}
