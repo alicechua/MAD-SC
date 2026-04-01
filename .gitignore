@@ -64,3 +64,5 @@ TODO.md
 
 # OED session cookies (sensitive, local only)
 scripts/oed_cookie.json
+
+!judge_examples.json
