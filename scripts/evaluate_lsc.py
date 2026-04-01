@@ -512,6 +512,12 @@ def main():
         help="Disable Lexicographer Agent. Overrides USE_LEXICOGRAPHER env var.",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for LLM sampling (sets LLM_SEED env var).",
+    )
+    parser.add_argument(
         "--no-tools",
         action="store_true",
         default=False,
@@ -547,6 +553,9 @@ def main():
     if not aligned:
         log.error("No words to evaluate — exiting.")
         sys.exit(1)
+
+    if args.seed is not None:
+        os.environ["LLM_SEED"] = str(args.seed)
 
     # ------------------------------------------------------------------
     # 2. Compile pipeline graph

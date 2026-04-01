@@ -62,7 +62,10 @@ def _tool_loop(llm_with_tools, messages, max_rounds: int = 5, agent_tag: str = "
 
     for _ in range(max_rounds):
         response = _robust_invoke(llm_with_tools, messages)
-        tool_calls = getattr(response, "tool_calls", None)
+        # Gemini AFC may return the full conversation as a list of messages or dicts
+        if isinstance(response, list):
+            response = response[-1]
+        tool_calls = response.get("tool_calls") if isinstance(response, dict) else getattr(response, "tool_calls", None)
         if not tool_calls:
             response._tool_calls = all_tool_calls
             return response
@@ -221,7 +224,18 @@ def _extract_text(response) -> str:
     Gemini (via langchain-google-genai) returns a list of content parts
     such as ``[{'type': 'text', 'text': '...', 'extras': {...}}]``.
     OpenAI-style responses return a plain ``str``.  This helper handles both.
+
+    When Gemini AFC completes its full loop internally, llm.invoke() may return
+    a list of messages rather than a single AIMessage. In that case, extract
+    the last message's content.
     """
+    # AFC can return a list of messages — take the last one
+    if isinstance(response, list):
+        response = response[-1]
+    # AFC may also return a dict with a 'content' or 'text' key
+    if isinstance(response, dict):
+        text = response.get("content") or response.get("text") or str(response)
+        return text if isinstance(text, str) else str(text)
     content = response.content
     if isinstance(content, str):
         return content
