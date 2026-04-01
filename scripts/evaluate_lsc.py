@@ -186,6 +186,48 @@ def align_words(
 # 2. Pipeline Orchestration
 # ===================================================================
 
+# ---------------------------------------------------------------------------
+# API key rotation (Google AI Studio only)
+# Populated from GOOGLE_AI_STUDIO_KEYS (comma-separated) in .env.
+# Falls back to the single GOOGLE_AI_STUDIO_KEY if the list is absent.
+# ---------------------------------------------------------------------------
+_GAS_KEY_POOL: list[str] = []
+_gas_key_index: int = 0
+
+
+def _init_key_pool() -> None:
+    """Build the key pool from env vars. Called once during main()."""
+    global _GAS_KEY_POOL, _gas_key_index
+    multi = os.getenv("GOOGLE_AI_STUDIO_KEYS", "")
+    if multi:
+        _GAS_KEY_POOL = [k.strip() for k in multi.split(",") if k.strip()]
+    single = os.getenv("GOOGLE_AI_STUDIO_KEY", "")
+    if single and single not in _GAS_KEY_POOL:
+        _GAS_KEY_POOL.insert(0, single)
+    _gas_key_index = 0
+    if _GAS_KEY_POOL:
+        os.environ["GOOGLE_AI_STUDIO_KEY"] = _GAS_KEY_POOL[0]
+        log.info("Key pool initialised: %d Google AI Studio key(s) available.", len(_GAS_KEY_POOL))
+
+
+def _rotate_gas_key() -> bool:
+    """Advance to the next key in the pool.
+
+    Updates GOOGLE_AI_STUDIO_KEY in os.environ so _get_llm() picks it up
+    on the next invocation. Returns True if a new key was activated,
+    False if the pool is exhausted.
+    """
+    global _gas_key_index
+    _gas_key_index += 1
+    if _gas_key_index < len(_GAS_KEY_POOL):
+        new_key = _GAS_KEY_POOL[_gas_key_index]
+        os.environ["GOOGLE_AI_STUDIO_KEY"] = new_key
+        log.info("  Rotated to API key %d/%d.", _gas_key_index + 1, len(_GAS_KEY_POOL))
+        return True
+    log.warning("  All %d API key(s) exhausted.", len(_GAS_KEY_POOL))
+    return False
+
+
 def run_pipeline_for_word(
     graph,
     word: str,
@@ -198,6 +240,9 @@ def run_pipeline_for_word(
 
     Returns the full result dict from the LangGraph invocation, or a
     sentinel dict on failure.
+
+    On a 429 / RESOURCE_EXHAUSTED error, attempts to rotate to the next
+    Google AI Studio key before sleeping.
     """
     initial_state = {
         "word": word,
@@ -221,9 +266,14 @@ def run_pipeline_for_word(
         except Exception as exc:
             err_str = str(exc)
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
-                log.warning("  Rate limit hit for '%s', sleeping 60s… (attempt %d/%d)",
-                            word, attempt + 1, max_retries)
-                time.sleep(60)
+                rotated = _rotate_gas_key()
+                if rotated:
+                    log.warning("  Rate limit hit for '%s' — switched API key, retrying immediately. (attempt %d/%d)",
+                                word, attempt + 1, max_retries)
+                else:
+                    log.warning("  Rate limit hit for '%s', no keys left — sleeping 60s… (attempt %d/%d)",
+                                word, attempt + 1, max_retries)
+                    time.sleep(60)
             else:
                 log.error("  Pipeline failed for '%s': %s", word, exc)
                 traceback.print_exc()
@@ -523,6 +573,9 @@ def main():
     # (nodes.py reads LLM_SEED dynamically inside _get_llm, so os.environ works here).
     if args.seed is not None:
         os.environ["LLM_SEED"] = str(args.seed)
+
+    # Initialise the Google AI Studio key pool (no-op for non-GAS backends).
+    _init_key_pool()
 
     # ------------------------------------------------------------------
     # 1. Load and align data
