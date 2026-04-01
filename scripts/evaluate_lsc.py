@@ -511,7 +511,18 @@ def main():
         action="store_false",
         help="Disable Lexicographer Agent. Overrides USE_LEXICOGRAPHER env var.",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for LLM sampling (sets LLM_SEED env var). Default: no seed.",
+    )
     args = parser.parse_args()
+
+    # Propagate seed into the environment so _get_llm() picks it up at import time
+    # (nodes.py reads LLM_SEED dynamically inside _get_llm, so os.environ works here).
+    if args.seed is not None:
+        os.environ["LLM_SEED"] = str(args.seed)
 
     # ------------------------------------------------------------------
     # 1. Load and align data
@@ -542,6 +553,21 @@ def main():
         graph_kwargs["use_grounding"] = args.use_grounding
     if args.use_lexicographer is not None:
         graph_kwargs["use_lexicographer"] = args.use_lexicographer
+    _backend = os.getenv("LLM_BACKEND", "openrouter").lower()
+    _debate_model = {
+        "google_ai_studio": os.getenv("DEFAULT_MODEL_GAS", "gemini-2.0-flash-lite"),
+        "vertex_ai":        os.getenv("DEFAULT_MODEL_VAI", "gemini-2.5-flash"),
+        "groq":             os.getenv("DEFAULT_MODEL_GROQ", "llama3-70b-8192"),
+        "nebius":           os.getenv("NEBIUS_MODEL", "meta-llama/Meta-Llama-3.1-70B-Instruct"),
+        "openrouter":       os.getenv("DEFAULT_MODEL_OR", "google/gemini-2.5-flash"),
+    }.get(_backend, os.getenv("DEFAULT_MODEL_OR", "google/gemini-2.5-flash"))
+    _judge_model = {
+        "google_ai_studio": os.getenv("JUDGE_MODEL_GAS") or _debate_model,
+        "nebius":           os.getenv("JUDGE_MODEL_NEBIUS") or _debate_model,
+    }.get(_backend, os.getenv("JUDGE_MODEL_OR") or _debate_model)
+    _lex_model = os.getenv("LEXICOGRAPHER_MODEL_NEBIUS") if _backend == "nebius" else None
+    log.info("Backend: %s | debate=%s | judge=%s | lexicographer=%s",
+             _backend, _debate_model, _judge_model, _lex_model or _debate_model)
     log.info("Compiling MAD-SC LangGraph pipeline… (grounding=%s, lexicographer=%s, mode=%s, rounds=%d)",
              graph_kwargs.get("use_grounding", "env/default"),
              graph_kwargs.get("use_lexicographer", "env/default"),

@@ -1,0 +1,300 @@
+[
+  {
+    "category": "BROADENING",
+    "word": "dog",
+    "old_sense": "male canine only",
+    "new_sense": "any canine regardless of sex",
+    "explanation": "old meaning is a subset of new meaning (scope widened)."
+  },
+  {
+    "category": "BROADENING",
+    "word": "bird",
+    "old_sense": "a young avian (nestling/fledgling)",
+    "new_sense": "any avian creature",
+    "explanation": "old meaning is a subset of new meaning (scope widened)."
+  },
+  {
+    "category": "BROADENING",
+    "word": "thing",
+    "old_sense": "a public assembly or court of law",
+    "new_sense": "any entity, object, or concept",
+    "explanation": "old meaning is a subset of new meaning (scope widened dramatically)."
+  },
+  {
+    "category": "BROADENING",
+    "word": "guy",
+    "old_sense": "an effigy of Guy Fawkes",
+    "new_sense": "any man (or person, in plural)",
+    "explanation": "old meaning is a subset of new meaning (scope widened)."
+  },
+  {
+    "category": "BROADENING",
+    "word": "quarantine",
+    "old_sense": "a strict 40-day isolation period",
+    "new_sense": "any period of medical isolation",
+    "explanation": "old meaning (specifically 40 days) is a subset of the new meaning (any duration)."
+  },
+  {
+    "category": "NARROWING",
+    "word": "meat",
+    "old_sense": "any solid food",
+    "new_sense": "animal flesh used for food",
+    "explanation": "new meaning is a subset of old meaning (scope narrowed)."
+  },
+  {
+    "category": "NARROWING",
+    "word": "starve",
+    "old_sense": "to die (from any cause)",
+    "new_sense": "to die specifically from hunger",
+    "explanation": "new meaning is a subset of old meaning (scope narrowed)."
+  },
+  {
+    "category": "NARROWING",
+    "word": "girl",
+    "old_sense": "a child or young person of either sex",
+    "new_sense": "a female child",
+    "explanation": "new meaning is a subset of old meaning (scope narrowed)."
+  },
+  {
+    "category": "NARROWING",
+    "word": "hound",
+    "old_sense": "any domestic dog",
+    "new_sense": "a dog bred specifically for hunting",
+    "explanation": "new meaning is a subset of old meaning (scope narrowed)."
+  },
+  {
+    "category": "NARROWING",
+    "word": "deer",
+    "old_sense": "any wild animal or beast",
+    "new_sense": "a specific family of hoofed mammals (Cervidae)",
+    "explanation": "new meaning is a subset of old meaning (scope narrowed)."
+  },
+  {
+    "category": "STABLE",
+    "word": "water",
+    "old_sense": "the liquid H₂O",
+    "new_sense": "the liquid H₂O",
+    "explanation": "core referential scope unchanged across contexts."
+  },
+  {
+    "category": "STABLE",
+    "word": "stone",
+    "old_sense": "hard, solid, non-metallic mineral matter",
+    "new_sense": "hard, solid, non-metallic mineral matter",
+    "explanation": "core referential scope unchanged across contexts."
+  },
+  {
+    "category": "STABLE",
+    "word": "tree",
+    "old_sense": "a woody perennial plant with a trunk",
+    "new_sense": "a woody perennial plant with a trunk",
+    "explanation": "core referential scope unchanged across contexts."
+  },
+  {
+    "category": "STABLE",
+    "word": "sleep",
+    "old_sense": "a natural, periodic state of rest for the mind and body",
+    "new_sense": "a natural, periodic state of rest for the mind and body",
+    "explanation": "core referential scope unchanged across contexts."
+  },
+  {
+    "category": "STABLE",
+    "word": "moon",
+    "old_sense": "the natural satellite of the Earth",
+    "new_sense": "the natural satellite of the Earth",
+    "explanation": "core referential scope unchanged across contexts."
+  },
+  {
+    "category": "STABLE",
+    "word": "hand",
+    "old_sense": "the terminal part of the human arm",
+    "new_sense": "the terminal part of the human arm",
+    "explanation": "core referential scope unchanged across contexts."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metaphor",
+    "word": "mouse",
+    "benchmark": true,
+    "old_sense": "a small rodent",
+    "new_sense": "a handheld computer pointing device",
+    "explanation": "shape/tail resembles the cable; different domains (nature vs. tech). Perceptual resemblance motivates the cross-domain leap."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metaphor",
+    "word": "crane",
+    "old_sense": "a large wading bird with a long neck",
+    "new_sense": "a machine for lifting heavy loads",
+    "explanation": "The visual resemblance between the bird's long neck and the machine's boom arm motivated the transfer. Different domains (natural world vs. engineering), linked by perceptual similarity."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metaphor",
+    "word": "broadcast",
+    "old_sense": "to scatter seeds widely by hand",
+    "new_sense": "to transmit radio or television signals",
+    "explanation": "The image of dispersing outward in all directions (seeds → signals) is a perceptual resemblance across different domains (agriculture vs. media)."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metaphor",
+    "word": "cloud",
+    "old_sense": "a visible mass of condensed water vapor in the sky",
+    "new_sense": "remote servers used for data storage and computing",
+    "explanation": "The shared quality of being diffuse, overhead, and semi-opaque motivates the cross-domain leap (meteorology → computing)."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metaphor",
+    "word": "desktop",
+    "old_sense": "the physical surface of a desk",
+    "new_sense": "the primary user interface screen of a computer",
+    "explanation": "The visual layout of a working surface (papers, tools) is mapped onto the digital workspace. Perceptual resemblance across physical and digital domains."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metonymy",
+    "word": "bead",
+    "benchmark": true,
+    "old_sense": "a prayer (counting prayers on a rosary)",
+    "new_sense": "a small sphere object threaded on a string",
+    "explanation": "beads USED FOR prayer → the physical object itself. Instrument-for-action metonymy within the same devotional event frame."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metonymy",
+    "word": "sweat",
+    "benchmark": true,
+    "old_sense": "perspiration; the fluid secreted by sweat glands",
+    "new_sense": "to work hard or labour strenuously",
+    "explanation": "sweat is the PHYSICAL RESULT of hard work (effect-for-cause metonymy). Both senses inhabit the same bodily/labour event frame."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metonymy",
+    "word": "shall",
+    "benchmark": true,
+    "old_sense": "deontic obligation — expressing duty or necessity",
+    "new_sense": "simple future tense — expressing what will happen",
+    "explanation": "Modal shift within the same functional domain of futurity (deontic → epistemic). Contiguity-based shift; no domain leap."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metonymy",
+    "word": "glass",
+    "old_sense": "a hard, brittle, transparent material",
+    "new_sense": "a drinking vessel or a pair of spectacles",
+    "explanation": "Material stands for the object made from it (material-for-product metonymy). The referents remain within the same conceptual world."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metonymy",
+    "word": "villain",
+    "old_sense": "a feudal farm servant or serf",
+    "new_sense": "a malicious or wicked person",
+    "explanation": "Class association within a shared social world: the low-status farm worker was stereotyped as untrustworthy, and the social label transferred to the moral quality (contiguity-based shift)."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Metonymy",
+    "word": "tongue",
+    "old_sense": "the muscular organ in the mouth",
+    "new_sense": "a language or manner of speaking",
+    "explanation": "Organ-for-function metonymy: the instrument of speech stands for speech itself. Both senses inhabit the same bodily/communicative event frame."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Analogy",
+    "word": "fast",
+    "benchmark": true,
+    "old_sense": "firmly fixed in place, immovable",
+    "new_sense": "moving or acting quickly",
+    "explanation": "Both senses share the abstract idea of 'no yielding/resistance' — applied analogically from physical anchoring to speed. No perceptual resemblance; purely structural/functional mapping."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Analogy",
+    "word": "hardly",
+    "benchmark": true,
+    "old_sense": "boldly, vigorously, with great force",
+    "new_sense": "scarcely, barely, almost not at all",
+    "explanation": "Structural shift from degree-of-effort to degree-of-occurrence. The abstract scalar structure is re-mapped across different semantic dimensions."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Analogy",
+    "word": "digest",
+    "old_sense": "to break down food chemically in the stomach",
+    "new_sense": "to mentally absorb and process information",
+    "explanation": "The abstract structure 'input → systematic processing → assimilation' is mapped from the biological domain to the cognitive domain. No perceptual resemblance — purely functional/structural analogy."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Ellipsis",
+    "word": "car",
+    "benchmark": true,
+    "old_sense": "short for 'motor car' — a self-propelled road vehicle",
+    "new_sense": "any automobile",
+    "explanation": "The compound 'motor car' was shortened to 'car', which inherited the full meaning. Diagnostic: the historically attested compound 'motor car' preceded the shortened form."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Ellipsis",
+    "word": "canine",
+    "benchmark": true,
+    "old_sense": "relating to dogs, or specifically a canine tooth",
+    "new_sense": "a dog (the animal itself)",
+    "explanation": "'Canine tooth' or 'canine animal' was shortened; the adjective absorbed the full noun meaning. Diagnostic: the compound phrase preceded the standalone use."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Ellipsis",
+    "word": "bus",
+    "old_sense": "short for 'omnibus' — a vehicle serving all (Latin: for all)",
+    "new_sense": "any large road vehicle for carrying passengers",
+    "explanation": "The compound 'omnibus' was shortened to 'bus', which then inherited the full meaning of the longer phrase. Diagnostic: a historically attested longer form ('omnibus') preceded the shortened word."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Antiphrasis",
+    "word": "perfect lady",
+    "benchmark": true,
+    "old_sense": "a woman of noble birth and refined manners",
+    "new_sense": "a prostitute (via ironic euphemism)",
+    "explanation": "The phrase was used sarcastically/ironically to refer to its opposite. The shift is socially driven — ironic inversion in context, not a genuine reversal."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Antiphrasis",
+    "word": "wicked",
+    "old_sense": "morally evil or sinful",
+    "new_sense": "excellent, impressive (informal)",
+    "explanation": "The positive sense arose through ironic inversion in informal/slang contexts: speakers used the negative word to express strong approval. The shift is socially/ironically driven, not a literal polarity reversal."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Auto-Antonym",
+    "word": "bad",
+    "benchmark": true,
+    "old_sense": "evil, wicked, of poor quality",
+    "new_sense": "excellent, impressive (slang)",
+    "explanation": "The word shifted to mean its opposite through slang/register shift. No ironic framing required — speakers genuinely use it positively."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Auto-Antonym",
+    "word": "cleave",
+    "old_sense": "to split or sever apart",
+    "new_sense": "to cling or adhere firmly to",
+    "explanation": "The word developed two directly opposite meanings (split apart vs. stick together) through internal linguistic drift, with no ironic framing required. Speakers genuinely use both senses."
+  },
+  {
+    "category": "TRANSFER",
+    "transfer_mechanism": "Synecdoche",
+    "word": "sail",
+    "old_sense": "a piece of canvas used to catch wind and propel a boat",
+    "new_sense": "a sailing vessel as a whole",
+    "explanation": "Part-for-whole transfer: the most visually prominent part (the sail) comes to stand for the entire ship. Both senses remain within the same domain (maritime)."
+  }
+]
