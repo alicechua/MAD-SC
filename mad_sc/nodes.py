@@ -519,19 +519,19 @@ def _format_oed_quotes_block(ctx: dict) -> str:
 
     source = ctx.get("source", "unknown").upper()
     lines = [f"=== OED QUOTATION EVIDENCE (source: {source}) ==="]
+    lines.append("Earliest attested quotations (oldest known usages):")
 
     if historical:
-        lines.append("Historical quotations (pre-1900):")
         for year, text in historical:
             lines.append(f"  [{year}] \"{text}\"")
 
     if modern:
-        lines.append("Modern quotations (1900–present):")
+        lines.append("Most recent quotations (latest known usages):")
         for year, text in modern:
             lines.append(f"  [{year}] \"{text}\"")
 
     lines.append("Use these as supplementary evidence alongside the corpus sentences.")
-    lines.append("They show attested usage but do NOT predetermine the change mechanism.")
+    lines.append("They show the temporal arc of attested usage but do NOT predetermine the change mechanism.")
     lines.append("=" * 53)
     return "\n".join(lines)
 
@@ -864,7 +864,8 @@ Decision rules
    ironic inversion, compound shortening) → TRANSFER.
 5. Weigh QUALITY of evidence, not volume.
 
-Output ONLY valid JSON matching the schema provided.\
+Output ONLY valid JSON with EXACTLY these two fields:
+  {{"coarse_category": "STABLE|Transfer|Broadening|Narrowing", "reasoning": "<brief justification>"}}\
 """
 
 _JUDGE_COARSE_USER = """\
@@ -1078,19 +1079,33 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
         print(f"[JUDGE-S1] Structured output failed for '{word}': {e}. Trying raw.")
 
     # Fallback: raw text parse for coarse category
+    # Also handles model-specific aliases: "verdict"→coarse_category, "reason"→reasoning,
+    # and case variants like "NARROWING"→"Narrowing", "BROADENING"→"Broadening".
+    _COARSE_ALIASES = {
+        "STABLE": "STABLE", "stable": "STABLE",
+        "Transfer": "Transfer", "TRANSFER": "Transfer", "transfer": "Transfer",
+        "Broadening": "Broadening", "BROADENING": "Broadening", "broadening": "Broadening",
+        "Narrowing": "Narrowing", "NARROWING": "Narrowing", "narrowing": "Narrowing",
+    }
     raw_llm = _get_judge_llm(temperature=0.1)
     messages_raw = [
         SystemMessage(content=coarse_system),
-        HumanMessage(content=user_prompt + "\n\nRespond with a JSON object: {\"coarse_category\": \"...\", \"reasoning\": \"...\"}"),
+        HumanMessage(content=user_prompt + '\n\nRespond with a JSON object using EXACTLY these fields: {"coarse_category": "STABLE|Transfer|Broadening|Narrowing", "reasoning": "..."}'),
     ]
     try:
         resp = _robust_invoke(raw_llm, messages_raw)
         text = _extract_text(resp)
-        m = re.search(r'"coarse_category"\s*:\s*"(STABLE|Transfer|Broadening|Narrowing)"', text)
+        # Try canonical field name first, then common aliases
+        m = re.search(
+            r'"(?:coarse_category|verdict|category|label)"\s*:\s*"([^"]+)"', text
+        )
         if m:
-            cat = m.group(1)
-            print(f"[JUDGE-S1-fallback] '{word}' → {cat}")
-            return _CoarseVerdict(coarse_category=cat, reasoning=text)
+            raw_val = m.group(1)
+            cat = _COARSE_ALIASES.get(raw_val)
+            if cat:
+                print(f"[JUDGE-S1-fallback] '{word}' → {cat}")
+                return _CoarseVerdict(coarse_category=cat, reasoning=text)
+            print(f"[JUDGE-S1-fallback] unrecognised value '{raw_val}' for '{word}'")
     except Exception as e:
         print(f"[JUDGE-S1] Raw fallback also failed for '{word}': {e}")
     return None
