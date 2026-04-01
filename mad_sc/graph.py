@@ -30,7 +30,7 @@ import os
 
 from langgraph.graph import END, START, StateGraph
 
-from mad_sc.nodes import grounding_node, judge_node, lexicographer_node, team_refuse_node, team_support_node
+from mad_sc.nodes import grounding_node, judge_node, oed_context_node, team_refuse_node, team_support_node
 from mad_sc.state import GraphState
 
 # Default controlled by env var so scripts and the Streamlit UI share one setting.
@@ -50,9 +50,9 @@ def compile_graph(
         When True, a grounding node runs before the debate teams, injecting
         BERT-based SED/TD evidence into their system prompts.
     use_lexicographer:
-        When True, a Lexicographer Agent runs before the debate teams,
-        producing a Definition Dossier (historical/modern senses + mechanism)
-        that anchors both teams to the etymological ground truth.
+        When True, an OED context node runs before the debate teams,
+        injecting raw dated quotations from OED/Wiktionary as supplementary
+        evidence into team prompts (no LLM synthesis step).
 
     Topology (sequential pre-processing steps, teams always in parallel):
 
@@ -81,9 +81,9 @@ def compile_graph(
         upstream_tail = "grounding"
 
     if use_lexicographer:
-        builder.add_node("lexicographer", lexicographer_node)
-        builder.add_edge(upstream_tail, "lexicographer")
-        upstream_tail = "lexicographer"
+        builder.add_node("oed_context", oed_context_node)
+        builder.add_edge(upstream_tail, "oed_context")
+        upstream_tail = "oed_context"
 
     # Fan-out to parallel debate teams from whichever node is last upstream.
     builder.add_edge(upstream_tail, "team_support")

@@ -113,6 +113,7 @@ def main():
 
     if args.seed is not None:
         random.seed(args.seed)
+        os.environ["LLM_SEED"] = str(args.seed)
 
     if args.n is not None:
         targets = random.sample(targets, min(args.n, len(targets)))

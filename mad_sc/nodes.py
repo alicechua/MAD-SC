@@ -12,6 +12,8 @@ rebuttal_support_node / rebuttal_refuse_node  –  adversarial rebuttal rounds.
 
 import json
 import os
+import pathlib
+import random
 import re
 import time
 
@@ -28,16 +30,109 @@ from mad_sc.state import EtymologyResult, GraphState, JudgeVerdict
 load_dotenv()
 
 # ---------------------------------------------------------------------------
+# Judge few-shot examples
+# ---------------------------------------------------------------------------
+_EXAMPLES_FILE = pathlib.Path(__file__).parent / "judge_examples.json"
+
+def _load_judge_examples() -> list[dict]:
+    with open(_EXAMPLES_FILE, encoding="utf-8") as f:
+        return json.load(f)
+
+def _build_fewshot_block(current_word: str | None = None,
+                         rng: random.Random | None = None) -> str:
+    # See _build_transfer_fewshot_block below for the Stage-2 equivalent.
+    """Select one example per category (BROADENING, NARROWING, STABLE) and two
+    TRANSFER examples, then format them as the few-shot block for the coarse judge.
+
+    Parameters
+    ----------
+    current_word:
+        The word currently being evaluated. Any example whose ``word`` field
+        matches (case-insensitive) is excluded so the judge never sees a
+        worked answer for the target word itself.
+    rng:
+        Optional seeded Random instance for reproducible selection. When None,
+        uses the global random state.
+    """
+    _target = current_word.lower() if current_word else None
+    examples = [e for e in _load_judge_examples()
+                if _target is None or e["word"].lower() != _target]
+    _rng = rng or random
+
+    by_category: dict[str, list[dict]] = {}
+    for ex in examples:
+        by_category.setdefault(ex["category"], []).append(ex)
+
+    selected: list[dict] = []
+    for cat in ("BROADENING", "NARROWING", "STABLE"):
+        pool = by_category.get(cat, [])
+        if pool:
+            selected.append(_rng.choice(pool))
+    transfer_pool = by_category.get("TRANSFER", [])
+    selected.extend(_rng.sample(transfer_pool, min(2, len(transfer_pool))))
+
+    lines = ["Few-shot examples", "-----------------"]
+    for ex in selected:
+        lines.append(f'Word: "{ex["word"]}"  \u2192  {ex["category"]}')
+        lines.append(f'  OLD: {ex["old_sense"]}  |  NEW: {ex["new_sense"]}')
+        lines.append(f'  Why: {ex["explanation"]}')
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _build_transfer_fewshot_block(current_word: str | None = None,
+                                   rng: random.Random | None = None) -> str:
+    """Select one Transfer example per mechanism and format as a few-shot block
+    for the Stage-2 transfer judge.
+
+    Mechanisms: Metaphor, Metonymy, Analogy, Ellipsis, Antiphrasis,
+                Auto-Antonym, Synecdoche.
+    One example is drawn randomly from each mechanism's pool, excluding any
+    example whose word matches ``current_word``.
+    """
+    _target = current_word.lower() if current_word else None
+    examples = _load_judge_examples()
+    _rng = rng or random
+
+    by_mechanism: dict[str, list[dict]] = {}
+    for ex in examples:
+        if (ex.get("category") == "TRANSFER"
+                and ex.get("transfer_mechanism")
+                and (_target is None or ex["word"].lower() != _target)):
+            by_mechanism.setdefault(ex["transfer_mechanism"], []).append(ex)
+
+    mechanisms = [
+        "Metaphor", "Metonymy", "Analogy", "Ellipsis",
+        "Antiphrasis", "Auto-Antonym", "Synecdoche",
+    ]
+
+    lines = ["Few-shot examples (one per mechanism)", "--------------------------------------"]
+    for mech in mechanisms:
+        pool = by_mechanism.get(mech, [])
+        if not pool:
+            continue
+        ex = _rng.choice(pool)
+        lines.append(f'{mech}: "{ex["word"]}"')
+        lines.append(f'  OLD: {ex["old_sense"]}')
+        lines.append(f'  NEW: {ex["new_sense"]}')
+        lines.append(f'  Why: {ex["explanation"]}')
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+# ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-_DEFAULT_MODEL_OR   = "google/gemini-2.5-flash"
-_DEFAULT_MODEL_GAS  = "gemini-2.0-flash-lite"
-_DEFAULT_MODEL_VAI  = "gemini-2.5-flash"
-_DEFAULT_MODEL_GROQ = "llama3-70b-8192"
+_DEFAULT_MODEL_OR     = "google/gemini-2.5-flash"
+_DEFAULT_MODEL_GAS    = "gemini-2.0-flash-lite"
+_DEFAULT_MODEL_VAI    = "gemini-2.5-flash"
+_DEFAULT_MODEL_GROQ   = "llama3-70b-8192"
+_DEFAULT_MODEL_NEBIUS = "meta-llama/Meta-Llama-3.1-70B-Instruct"
 # Judge can use a stronger/reasoning model independently of the team agents.
-# Set JUDGE_MODEL_GAS / JUDGE_MODEL_OR in .env to override; falls back to the team default.
-_JUDGE_MODEL_OR  = os.getenv("JUDGE_MODEL_OR")   # e.g. "google/gemini-2.5-flash"
-_JUDGE_MODEL_GAS = os.getenv("JUDGE_MODEL_GAS")  # e.g. "gemini-2.5-flash"
+# Set JUDGE_MODEL_GAS / JUDGE_MODEL_OR / JUDGE_MODEL_NEBIUS in .env to override; falls back to the team default.
+_JUDGE_MODEL_OR     = os.getenv("JUDGE_MODEL_OR")     # e.g. "google/gemini-2.5-flash"
+_JUDGE_MODEL_GAS    = os.getenv("JUDGE_MODEL_GAS")    # e.g. "gemini-2.5-flash"
+_JUDGE_MODEL_NEBIUS        = os.getenv("JUDGE_MODEL_NEBIUS")        # e.g. "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1"
+_LEXICOGRAPHER_MODEL_NEBIUS = os.getenv("LEXICOGRAPHER_MODEL_NEBIUS") # e.g. "nvidia/Llama-3_1-Nemotron-Ultra-253B-v1"
 # Inter-call delay to stay under free-tier rate limits
 _INTER_CALL_DELAY = float(os.getenv("INTER_CALL_DELAY", "2.0"))
 
@@ -67,8 +162,12 @@ _LABEL_ALIASES: dict[str, str] = {
 }
 
 
-def _get_llm(model: str | None = None, temperature: float = 0.7) -> Any:
+def _get_llm(model: str | None = None, temperature: float = 0.7, seed: int | None = None) -> Any:
     """Instantiate an LLM based on the LLM_BACKEND env variable.
+
+    If ``seed`` is None, reads LLM_SEED from the environment (if set).
+    Seed is passed to Nebius/OpenRouter (OpenAI-compatible) and Gemini backends
+    for reproducible sampling at temperature > 0.
 
     Backends
     --------
@@ -78,6 +177,8 @@ def _get_llm(model: str | None = None, temperature: float = 0.7) -> Any:
                       Model resolved from DEFAULT_MODEL_VAI env var.
     groq              Uses langchain-groq + GROQ_API_KEY.
                       Model resolved from DEFAULT_MODEL_GROQ env var.
+    nebius            Uses langchain-openai pointed at Nebius AI Studio.
+                      Model resolved from NEBIUS_MODEL env var.
     openrouter        Uses langchain-openai pointed at OpenRouter.
                       Model resolved from DEFAULT_MODEL_OR env var.
 
@@ -86,18 +187,30 @@ def _get_llm(model: str | None = None, temperature: float = 0.7) -> Any:
     """
     backend = os.getenv("LLM_BACKEND", "openrouter").lower()
 
+    # Resolve seed: explicit arg → LLM_SEED env var → None
+    _env_seed = os.getenv("LLM_SEED")
+    if seed is None and _env_seed is not None:
+        try:
+            seed = int(_env_seed)
+        except ValueError:
+            pass
+
     if backend == "google_ai_studio":
         from langchain_google_genai import ChatGoogleGenerativeAI
         api_key = os.getenv("GOOGLE_AI_STUDIO_KEY")
         if not api_key:
             raise EnvironmentError("GOOGLE_AI_STUDIO_KEY is not set in .env")
         resolved_model = model or os.getenv("DEFAULT_MODEL_GAS", _DEFAULT_MODEL_GAS)
+        kwargs = {}
+        if seed is not None:
+            kwargs["seed"] = seed
         return ChatGoogleGenerativeAI(
             model=resolved_model,
             temperature=temperature,
             google_api_key=api_key,
             max_retries=3,
             max_output_tokens=2048,
+            **kwargs,
         )
 
     if backend == "vertex_ai":
@@ -126,6 +239,20 @@ def _get_llm(model: str | None = None, temperature: float = 0.7) -> Any:
             temperature=temperature,
         )
 
+    if backend == "nebius":
+        api_key = os.getenv("NEBIUS_API_KEY")
+        if not api_key:
+            raise EnvironmentError("LLM_BACKEND=nebius but NEBIUS_API_KEY is not set in .env.")
+        resolved_model = model or os.getenv("NEBIUS_MODEL", _DEFAULT_MODEL_NEBIUS)
+        return ChatOpenAI(
+            model=resolved_model,
+            temperature=temperature,
+            api_key=api_key,
+            base_url="https://api.studio.nebius.com/v1/",
+            max_retries=3,
+            **({"seed": seed} if seed is not None else {}),
+        )
+
     # Default: openrouter
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
@@ -141,7 +268,8 @@ def _get_llm(model: str | None = None, temperature: float = 0.7) -> Any:
         default_headers={
             "HTTP-Referer": "https://github.com/torontoui/mad-sc",
             "X-Title": "MAD-SC Evaluation",
-        }
+        },
+        **({"seed": seed} if seed is not None else {}),
     )
 
 
@@ -157,7 +285,12 @@ def _get_judge_llm(temperature: float = 0.1):
     JUDGE_MODEL_OR=google/gemini-2.5-flash
     """
     backend = os.getenv("LLM_BACKEND", "openrouter").lower()
-    judge_model = _JUDGE_MODEL_GAS if backend == "google_ai_studio" else _JUDGE_MODEL_OR
+    if backend == "google_ai_studio":
+        judge_model = _JUDGE_MODEL_GAS
+    elif backend == "nebius":
+        judge_model = _JUDGE_MODEL_NEBIUS
+    else:
+        judge_model = _JUDGE_MODEL_OR
     return _get_llm(model=judge_model, temperature=temperature)
 
 
@@ -377,6 +510,51 @@ Then produce the structured EtymologyResult fields:
   mechanism_of_change  : the mechanism from Stage 2"""
 
 
+def _format_oed_quotes_block(ctx: dict) -> str:
+    """Format raw OED/Wiktionary quotes into a neutral evidence block for team prompts."""
+    historical = ctx.get("historical") or []
+    modern = ctx.get("modern") or []
+    if not historical and not modern:
+        return ""
+
+    source = ctx.get("source", "unknown").upper()
+    lines = [f"=== OED QUOTATION EVIDENCE (source: {source}) ==="]
+
+    if historical:
+        lines.append("Historical quotations (pre-1900):")
+        for year, text in historical:
+            lines.append(f"  [{year}] \"{text}\"")
+
+    if modern:
+        lines.append("Modern quotations (1900–present):")
+        for year, text in modern:
+            lines.append(f"  [{year}] \"{text}\"")
+
+    lines.append("Use these as supplementary evidence alongside the corpus sentences.")
+    lines.append("They show attested usage but do NOT predetermine the change mechanism.")
+    lines.append("=" * 53)
+    return "\n".join(lines)
+
+
+def oed_context_node(state: GraphState) -> dict:
+    """OED Context: fetches dated quotations from OED/Wiktionary and injects them
+    as neutral supplementary evidence into team prompts — no LLM synthesis step."""
+    word = state["word"]
+    try:
+        ctx = fetch_etymology_context(word)
+        block = _format_oed_quotes_block(ctx)
+        if block:
+            print(f"[OED] Evidence fetched for '{word}' (source: {ctx['source']}, "
+                  f"historical: {len(ctx.get('historical') or [])}, "
+                  f"modern: {len(ctx.get('modern') or [])})")
+        else:
+            print(f"[OED] No quotes found for '{word}' (source: {ctx['source']})")
+        return {"oed_quotes_block": block}
+    except Exception as exc:
+        print(f"[OED] Skipped for '{word}': {exc}")
+        return {"oed_quotes_block": ""}
+
+
 def lexicographer_node(state: GraphState) -> dict:
     """Lexicographer Agent: fetches OED/Wiktionary evidence and produces a Definition Dossier.
 
@@ -393,7 +571,9 @@ def lexicographer_node(state: GraphState) -> dict:
         etymology_str = format_etymology_context_for_prompt(ctx)
 
         # Step 2 — LLM synthesises structured EtymologyResult from evidence
-        llm = _get_llm(temperature=0.1).with_structured_output(EtymologyResult)
+        _backend = os.getenv("LLM_BACKEND", "openrouter").lower()
+        _lex_model = _LEXICOGRAPHER_MODEL_NEBIUS if _backend == "nebius" else None
+        llm = _get_llm(model=_lex_model, temperature=0.1).with_structured_output(EtymologyResult)
         messages = [
             SystemMessage(content=_LEXICOGRAPHER_SYSTEM),
             HumanMessage(content=_LEXICOGRAPHER_USER.format(
@@ -463,23 +643,52 @@ _SUPPORT_SYSTEM = """You are a computational linguist on **Team Support**.
 Your goal is to determine whether the target word has undergone genuine diachronic
 semantic change, and argue for change only if the corpus evidence supports it.
 
-Requirements
-------------
-1. Identify specific sentences from the NEW period whose semantics are **incompatible**
-   with the dominant meaning established in the OLD period.
-2. Classify the shift into EXACTLY ONE Change Type from Blank's taxonomy:
-   - **Metaphor**: meaning extended via conceptual *similarity* (resemblance across domains).
-   - **Metonymy**: meaning shifted via *contiguity* or *association* (part-for-whole, cause-for-effect, container-for-content).
-   - **Analogy**: meaning extended via structural resemblance across semantic domains.
-   - **Generalization**: scope *broadened* to cover a wider range of referents.
-   - **Specialization**: scope *narrowed* to a specific domain or subset.
-   - **Ellipsis**: a compound phrase shortened; meaning transferred to the head noun alone (e.g. "motor car" → "car").
-   - **Antiphrasis**: meaning shifted to its *opposite* through ironic or euphemistic usage.
-   - **Auto-Antonym**: word acquired a sense directly *opposite* to its original meaning.
-   - **Synecdoche**: part-for-whole or whole-for-part meaning transfer.
-3. Hypothesize EXACTLY ONE Causal Driver:
-   - **Cultural Shift**: driven by broad societal, technological, or cultural changes.
-   - **Linguistic Drift**: driven by internal linguistic processes (metaphor, metonymy, analogy)."""
+STEP 1 — Establish the OLD core sense
+  Identify the dominant, prototypical meaning from OLD sentences only (2–3 key features).
+
+STEP 2 — Identify the incompatible NEW sense
+  Find NEW sentences whose semantics cannot be explained by the OLD core sense.
+  These are your strongest evidence for change.
+
+STEP 3 — Classify the mechanism (CRITICAL — work through this before writing)
+  Ask the following questions IN ORDER:
+
+  Q1: Is the new referent/domain qualitatively DIFFERENT from the old one?
+      (i.e. not simply a wider or narrower version of the same thing)
+      → If YES: the mechanism is a TRANSFER type — continue to Q2.
+      → If NO:  the scope shifted within the same domain — continue to Q4.
+
+  Q2 (Transfer): What is the link between the old and new referent?
+      • Perceptual or structural RESEMBLANCE across domains  → **Metaphor**
+        e.g. "mouse" (rodent) → (computer device): shape/cable resembles tail.
+      • CONTIGUITY or ASSOCIATION within the same event frame → **Metonymy**
+        e.g. "bead" (prayer) → (small sphere): the physical object used in prayer.
+        e.g. "shall" (obligation) → (future): modal shift within futurity domain.
+      • Abstract/functional PARALLEL (not perceptual)        → **Analogy**
+        e.g. "fast" (firmly fixed) → (moving quickly): "no yielding" applied to speed.
+      • Word was SHORTENED from a historically attested compound → **Ellipsis**
+        e.g. "canine tooth" → "canine".  Always check for the source compound first.
+      • Meaning reversed through IRONY or euphemism           → **Antiphrasis**
+      • Meaning reversed WITHOUT irony (genuine polarity flip) → **Auto-Antonym**
+      • PART-FOR-WHOLE or whole-for-part within same domain   → **Synecdoche**
+
+  Q3 (Generalization vs. Transfer — most common mistake):
+      Do NOT choose Generalization just because the word gained new uses.
+      Generalization requires the new referents to be a STRICTLY WIDER SET of the
+      same kind of thing as the old referents.
+        ✗ "mouse" gaining a computer sense is NOT Generalization — computer devices
+          are not a broader category of rodents. → Metaphor.
+        ✗ "holiday" shifting from holy day to leisure break is NOT Generalization —
+          leisure breaks are not a broader category of holy days. → Metonymy.
+        ✓ "dog" expanding from male canine to any canine IS Generalization.
+
+  Q4 (Scope shift within same domain):
+      • New meaning covers MORE referents of the same kind → **Generalization**
+      • New meaning covers FEWER referents of the same kind → **Specialization**
+
+STEP 4 — Hypothesize EXACTLY ONE Causal Driver:
+  - **Cultural Shift**: driven by broad societal, technological, or cultural changes.
+  - **Linguistic Drift**: driven by internal linguistic processes (metaphor, metonymy, analogy)."""
 
 _SUPPORT_USER = """Analyze the word "{word}" (used as a {word_type}) for diachronic semantic change.
 
@@ -489,10 +698,17 @@ SENTENCES FROM {t_old} (OLD period):
 SENTENCES FROM {t_new} (NEW period):
 {sentences_new}
 
-Build Arg_change — your argument that a genuine semantic shift has occurred between \
-{t_old} and {t_new}. Cite specific sentence evidence, name the Change Type from \
-Blank's taxonomy (Metaphor / Metonymy / Analogy / Generalization / Specialization / \
-Ellipsis / Antiphrasis / Auto-Antonym / Synecdoche), and identify the Causal Driver."""
+Follow Steps 1–4 from your instructions explicitly:
+  Step 1: State the OLD core sense (2–3 features from OLD sentences).
+  Step 2: Quote the NEW sentence(s) that are incompatible with the OLD sense.
+  Step 3: Work through Q1→Q2/Q4 to determine the mechanism. Show your reasoning.
+           In particular: is the new referent qualitatively DIFFERENT (→ Transfer type)
+           or just a wider/narrower set of the same thing (→ Generalization/Specialization)?
+  Step 4: State the Causal Driver.
+
+Then write your final Arg_change, concluding with:
+  Change Type: <exactly one of Metaphor / Metonymy / Analogy / Generalization / Specialization / Ellipsis / Antiphrasis / Auto-Antonym / Synecdoche>
+  Causal Driver: <Cultural Shift | Linguistic Drift>"""
 
 
 def team_support_node(state: GraphState) -> dict:
@@ -502,9 +718,9 @@ def team_support_node(state: GraphState) -> dict:
     sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
     sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
 
-    # Inject lexicographer dossier first (highest priority context), then BERT grounding.
-    dossier = state.get("lexicographer_dossier", "") or ""
-    system_content = f"{dossier}\n\n{_SUPPORT_SYSTEM}" if dossier else _SUPPORT_SYSTEM
+    # Append OED quote block after system instructions (supplementary evidence, not ground truth).
+    oed_block = state.get("oed_quotes_block", "") or ""
+    system_content = f"{_SUPPORT_SYSTEM}\n\n{oed_block}" if oed_block else _SUPPORT_SYSTEM
 
     response = _robust_invoke(
         llm,
@@ -570,9 +786,9 @@ def team_refuse_node(state: GraphState) -> dict:
     sentences_old = "\n".join(f"  • {s}" for s in state["sentences_old"])
     sentences_new = "\n".join(f"  • {s}" for s in state["sentences_new"])
 
-    # Inject lexicographer dossier first (highest priority context), then BERT grounding.
-    dossier = state.get("lexicographer_dossier", "") or ""
-    system_content = f"{dossier}\n\n{_REFUSE_SYSTEM}" if dossier else _REFUSE_SYSTEM
+    # Append OED quote block after system instructions (supplementary evidence, not ground truth).
+    oed_block = state.get("oed_quotes_block", "") or ""
+    system_content = f"{_REFUSE_SYSTEM}\n\n{oed_block}" if oed_block else _REFUSE_SYSTEM
 
     response = _robust_invoke(
         llm,
@@ -637,28 +853,7 @@ Transfer   — The meaning was transferred to a new referent or domain via some 
              Diagnostic: the new referent/domain is NOT simply a wider or narrower \
              version of the old — it is a qualitatively different one.
 
-Few-shot examples
------------------
-Word: "dog"  →  BROADENING
-  OLD: male canine only  |  NEW: any canine regardless of sex
-  Why: old meaning is a subset of new meaning (scope widened).
-
-Word: "corn"  →  NARROWING
-  OLD: any cereal grain  |  NEW: maize specifically
-  Why: new meaning is a subset of old meaning (scope narrowed).
-
-Word: "mouse"  →  TRANSFER
-  OLD: small rodent  |  NEW: computer pointing device
-  Why: rodent ≠ subset/superset of computer device; it is a qualitatively different \
-  referent reached via resemblance.
-
-Word: "bead"  →  TRANSFER
-  OLD: a prayer (counting prayers on a rosary)  |  NEW: small sphere object
-  Why: prayer ≠ subset/superset of sphere; meaning transferred via association.
-
-Word: "water"  →  STABLE
-  OLD: the liquid H₂O  |  NEW: the liquid H₂O
-  Why: core referential scope unchanged across contexts.
+{fewshot_block}
 
 Decision rules
 --------------
@@ -698,45 +893,29 @@ Transfer mechanisms
 Metaphor    – New sense connected to old via CONCEPTUAL RESEMBLANCE across domains.
               The two referents share perceptual or structural similarity but belong
               to different conceptual domains.
-              ► Example: "mouse" (rodent) → "mouse" (computer device)
-                Reason: shape/tail resembles the cable; different domains (nature vs tech).
 
 Metonymy    – New sense connected to old via CONTIGUITY or ASSOCIATION within the
               same conceptual world (part-for-whole, cause-for-effect,
               container-for-content, instrument-for-action).
-              ► Example: "bead" (prayer) → "bead" (small sphere)
-                Reason: beads USED FOR prayer → the physical object itself.
-              ► Example: "sweat" (perspiration) → "work hard"
-                Reason: sweat is the PHYSICAL RESULT of hard work (effect-for-cause).
-              ► Example: "shall" (deontic obligation) → "will" (temporal future)
-                Reason: modal shift within the same functional domain (futurity).
 
 Analogy     – New sense connected via STRUCTURAL resemblance across semantic domains
               (not perceptual). The mapping is abstract/functional rather than visual.
-              ► Example: "fast" (firmly fixed) → "moving quickly"
-                Reason: both senses share the abstract idea of "no yielding/resistance"
-                applied analogically from physical anchoring to speed.
-              ► Example: "hardly" (boldly/vigorously) → "scarcely/barely"
-                Reason: structural shift from degree-of-effort to degree-of-occurrence.
 
 Ellipsis    – A COMPOUND phrase was shortened; the head noun inherited the full meaning
               of the compound.
-              ► Example: "motor car" → "car" (car inherited "motor car" meaning).
-              ► Example: "canine tooth" → "canine" (tooth sense absorbed).
               Diagnostic: always check if the word was historically part of a longer phrase.
 
 Antiphrasis – Meaning shifted to its OPPOSITE through IRONIC or EUPHEMISTIC usage.
               The shift happened gradually via sarcastic/ironic context.
-              ► Example: "perfect lady" (noble woman) → (prostitute via irony)
               Distinguish from Auto-Antonym: the mechanism is social/ironic, not internal.
 
 Auto-Antonym – Word acquired a sense DIRECTLY OPPOSITE to its original meaning without
                irony — a straightforward polarity reversal driven by slang/register shift.
-               ► Example: "bad" (evil/wicked) → "excellent" (slang)
                Distinguish from Antiphrasis: no irony — speakers genuinely use it positively.
 
 Synecdoche  – PART-FOR-WHOLE or WHOLE-FOR-PART meaning transfer within the same domain.
-              ► Example: "sail" (piece of canvas) → "sailing vessel" (whole ship).
+
+{fewshot_block}
 
 Critical disambiguation rules
 ------------------------------
@@ -864,9 +1043,11 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
                       num_rounds: int = 1,
                       word_type: str = "word") -> _CoarseVerdict | None:
     """Stage 1: classify into STABLE / Transfer / Broadening / Narrowing."""
+    fewshot = _build_fewshot_block(current_word=word)
+    coarse_prompt = _JUDGE_COARSE_SYSTEM.format(fewshot_block=fewshot)
     coarse_system = (
-        f"{lexicographer_dossier}\n\n{_JUDGE_COARSE_SYSTEM}"
-        if lexicographer_dossier else _JUDGE_COARSE_SYSTEM
+        f"{lexicographer_dossier}\n\n{coarse_prompt}"
+        if lexicographer_dossier else coarse_prompt
     )
     
     if debate_history and num_rounds > 1:
@@ -888,7 +1069,7 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
         HumanMessage(content=user_prompt),
     ]
     try:
-        llm = _get_judge_llm(temperature=0.1).with_structured_output(_CoarseVerdict)
+        llm = _get_judge_llm(temperature=0.1).with_structured_output(_CoarseVerdict, method="json_mode")
         result = _robust_invoke(llm, messages)
         if result is not None:
             print(f"[JUDGE-S1] '{word}' → {result.coarse_category}")
@@ -920,9 +1101,11 @@ def _run_transfer_stage(word: str, t_old: str, t_new: str,
                         coarse_reasoning: str,
                         lexicographer_dossier: str = "") -> JudgeVerdict:
     """Stage 2: identify exact Transfer mechanism."""
+    fewshot = _build_transfer_fewshot_block(current_word=word)
+    transfer_prompt = _JUDGE_TRANSFER_SYSTEM.format(fewshot_block=fewshot)
     transfer_system = (
-        f"{lexicographer_dossier}\n\n{_JUDGE_TRANSFER_SYSTEM}"
-        if lexicographer_dossier else _JUDGE_TRANSFER_SYSTEM
+        f"{lexicographer_dossier}\n\n{transfer_prompt}"
+        if lexicographer_dossier else transfer_prompt
     )
     messages = [
         SystemMessage(content=transfer_system),
@@ -933,7 +1116,7 @@ def _run_transfer_stage(word: str, t_old: str, t_new: str,
         )),
     ]
     try:
-        llm = _get_judge_llm(temperature=0.2).with_structured_output(JudgeVerdict)
+        llm = _get_judge_llm(temperature=0.2).with_structured_output(JudgeVerdict, method="json_mode")
         verdict = _robust_invoke(llm, messages)
         if verdict is not None and verdict.change_type in _TRANSFER_TYPES:
             print(f"[JUDGE-S2] '{word}' → {verdict.change_type}")

@@ -191,8 +191,11 @@ class GraphState(TypedDict):
     # --- Pre-debate grounding (populated by grounding_node) ---
     grounding_block: Optional[str]       # HypothesisDocument.to_prompt_block() or "" if unavailable
 
-    # --- Lexicographer dossier (populated by lexicographer_node) ---
+    # --- Lexicographer dossier (populated by lexicographer_node, kept for trace compat) ---
     lexicographer_dossier: Optional[str] # EtymologyResult.to_dossier_block() or "" if unavailable
+
+    # --- OED quote block (populated by oed_context_node) ---
+    oed_quotes_block: Optional[str]      # Raw dated OED quotes formatted for team prompts
 
     # --- Debate outputs (populated by parallel Team nodes) ---
     arg_change: str            # Latest argument for semantic change (Team Support)
