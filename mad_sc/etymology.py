@@ -202,15 +202,23 @@ def _fetch_oed_context(word: str) -> Optional[dict]:
         log.debug("OED: no entry URL found for '%s'", word)
         return None
 
-    historical = _oed_parse_quotes(page_html, max_year=1899, max_quotes=6)
-    modern = _oed_parse_quotes(page_html, min_year=1900, max_quotes=6)
+    # Parse all available quotes, then sample from the temporal extremes:
+    # earliest N (oldest attested) + latest N (most recent), ignoring the
+    # 1900 cutoff so the evidence spans the full temporal arc of the entry.
+    all_quotes = _oed_parse_quotes(page_html, max_quotes=9999)
+    all_quotes.sort(key=lambda q: q[0])
+    n_each = 4
+    historical = all_quotes[:n_each]
+    modern = all_quotes[-n_each:] if len(all_quotes) > n_each else []
 
     if not historical and not modern:
         log.debug("OED: 0 quotes parsed for '%s'", word)
         return None
 
-    log.info("OED: %d historical + %d modern quotes for '%s'",
-             len(historical), len(modern), word)
+    log.info("OED: %d earliest + %d latest quotes for '%s' (span: %s–%s)",
+             len(historical), len(modern), word,
+             historical[0][0] if historical else "?",
+             modern[-1][0] if modern else "?")
     return {"historical": historical, "modern": modern}
 
 
