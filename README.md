@@ -85,7 +85,7 @@ Round 0 (opening, parallel):
 
 The Lexicographer Agent fetches real corpus evidence before synthesising definitions:
 
-1. **OED (primary)** — Playwright headless Chromium loads the OED entry page (JS-rendered), parses `li.quotation` elements, and extracts up to 6 historical (pre-1900) and 6 modern (1900+) dated quotations. Requires a valid UofT library session cookie at `scripts/oed_cookie.json`.
+1. **OED (primary)** — Playwright headless Chromium loads the OED entry page (JS-rendered), parses `li.quotation` elements, and extracts up to 6 historical (pre-1900) and 6 modern (1900+) dated quotations. Requires a valid UofT library session cookie at `scripts/oed_cookie.json`. (http://oed.com.myaccess.library.utoronto.ca/)
 2. **Wiktionary (fallback)** — If OED is unavailable (no cookie, expired session), fetches the Etymology section via the Wiktionary REST API (no auth).
 3. **Parametric only** — If both external sources fail, the LLM reasons from training knowledge.
 
@@ -238,6 +238,26 @@ SEMEVAL_DIR=data/semeval2020_ulscd_eng
 SEMEVAL_MAX_SAMPLES=10
 ```
 
+### LSC-CTD benchmark (fine-grained evaluation)
+
+The **Lexical Semantic Change Cause-Type-Definitions (LSC-CTD)** benchmark provides expert-annotated change types and related metadata (see the [Zenodo record](https://zenodo.org/records/11574368) and DOI [10.5281/zenodo.11574368](https://doi.org/10.5281/zenodo.11574368)).
+
+1. Download `blank_dataset.tsv` from Zenodo (use **Download** on the file list, or fetch directly):
+
+   ```bash
+   mkdir -p data/LSC-CTD
+   curl -L -o data/LSC-CTD/blank_dataset.tsv \
+     "https://zenodo.org/records/11574368/files/blank_dataset.tsv?download=1"
+   ```
+
+2. Place the file at:
+
+   ```
+   data/LSC-CTD/blank_dataset.tsv
+   ```
+
+`scripts/evaluate_lsc.py` reads this TSV via `--ground-truth` (default: `data/LSC-CTD/blank_dataset.tsv`). You also need `data/lsc_context_data_engl.json` (historical/modern contexts per word); build or refresh it with the LSC data pipeline scripts under `scripts/` if that file is missing.
+
 ### OED Session Cookie (arbitrary words + Lexicographer Agent)
 
 OED scraping requires a valid UofT library session. To set it up:
@@ -306,11 +326,42 @@ python main.py attack_nn --mode multi   # defaults to 3 rounds
 source .venv/bin/activate
 
 # Evaluate against SemEval-2020 Task 1 binary ground truth
-python scripts/evaluate_semeval.py --output eval_results/
+python scripts/evaluate_semeval.py --out-dir eval_results/
 
 # Evaluate against LSC-CTD benchmark (Change Type + Causal Driver)
-python scripts/evaluate_lsc.py --output eval_results/
+python scripts/evaluate_lsc.py --output-dir eval_results/ 
 ```
+
+**`evaluate_semeval.py` flags**
+
+| Flag | Meaning / what user configures |
+|---|---|
+| `--n N` | Evaluate a random subset of `N` target words (default: all targets). |
+| `--seed S` | Random seed for reproducible sampling and LLM seed propagation. |
+| `--mode single\|multi` | Debate mode: `single` (parallel opening) or `multi` (rebuttal rounds). |
+| `--rounds N` | Number of rebuttal rounds when `--mode multi` (default: `3`). |
+| `--samples N` | Number of corpus sentences per period shown to agents (default: `10`). |
+| `--out-dir DIR` | Directory where result files are written (default: current directory). |
+| `--session NAME` | Optional run label appended to output filenames for easier run tracking. |
+| `--grounding` / `--no-grounding` | Force-enable or force-disable BERT grounding (overrides env default). |
+| `--lexicographer` / `--no-lexicographer` | Force-enable or force-disable Lexicographer Agent (overrides env default). |
+
+**`evaluate_lsc.py` flags**
+
+| Flag | Meaning / what user configures |
+|---|---|
+| `--words w1 w2 ...` | Evaluate only a subset of words (default: all aligned `:engl` words). |
+| `--output-dir DIR` | Base directory for evaluation outputs (default: `eval_results/`). |
+| `--session NAME` | Optional run label; outputs are written under `<output-dir>/<session>/`. |
+| `--context-json PATH` | Path to LSC context data JSON file. |
+| `--ground-truth PATH` | Path to benchmark TSV ground-truth file. |
+| `--delay SEC` | Delay between word runs to reduce API pressure (default: `2.0`). |
+| `--resume` | Skip words that already have successful trace files in output dir. |
+| `--mode single\|multi` | Debate mode: `single` (parallel opening) or `multi` (rebuttal rounds). |
+| `--rounds N` | Number of rebuttal rounds when `--mode multi` (default: `3`). |
+| `--grounding` / `--no-grounding` | Force-enable or force-disable BERT grounding (overrides env default). |
+| `--lexicographer` / `--no-lexicographer` | Force-enable or force-disable Lexicographer Agent (overrides env default). |
+| `--seed S` | Random seed for LLM sampling (`LLM_SEED`). |
 
 ---
 
