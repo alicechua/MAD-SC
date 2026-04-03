@@ -30,17 +30,26 @@ import os
 
 from langgraph.graph import END, START, StateGraph
 
-from mad_sc.nodes import grounding_node, judge_node, oed_context_node, team_refuse_node, team_support_node
+from mad_sc.nodes import (
+    grounding_node,
+    judge_node,
+    oed_context_node,
+    self_consistency_judge_node,
+    team_refuse_node,
+    team_support_node,
+)
 from mad_sc.state import GraphState
 
 # Default controlled by env var so scripts and the Streamlit UI share one setting.
 _GROUNDING_DEFAULT = os.getenv("USE_GROUNDING", "false").lower() not in ("0", "false", "no")
 _LEXICOGRAPHER_DEFAULT = os.getenv("USE_LEXICOGRAPHER", "true").lower() not in ("0", "false", "no")
+_SC_DEFAULT = os.getenv("USE_SELF_CONSISTENCY", "false").lower() not in ("0", "false", "no")
 
 
 def compile_graph(
     use_grounding: bool = _GROUNDING_DEFAULT,
     use_lexicographer: bool = _LEXICOGRAPHER_DEFAULT,
+    use_self_consistency: bool = _SC_DEFAULT,
 ):
     """Build and compile the MAD-SC StateGraph.
 
@@ -53,6 +62,10 @@ def compile_graph(
         When True, an OED context node runs before the debate teams,
         injecting raw dated quotations from OED/Wiktionary as supplementary
         evidence into team prompts (no LLM synthesis step).
+    use_self_consistency:
+        When True, replaces the single judge with a self-consistency panel of
+        3 judges (Lexicographer / CognitiveSemantist / Sociolinguist) that run
+        in parallel and resolve disagreements via majority vote.
 
     Topology (sequential pre-processing steps, teams always in parallel):
 
@@ -68,9 +81,11 @@ def compile_graph(
     """
     builder = StateGraph(GraphState)
 
+    judge_fn = self_consistency_judge_node if use_self_consistency else judge_node
+
     builder.add_node("team_support", team_support_node)
     builder.add_node("team_refuse", team_refuse_node)
-    builder.add_node("judge", judge_node)
+    builder.add_node("judge", judge_fn)
 
     # Build the upstream chain: START → [grounding →] [lexicographer →] teams
     upstream_tail = START  # the node that feeds into teams (updated below)

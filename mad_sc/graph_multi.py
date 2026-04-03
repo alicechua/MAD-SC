@@ -29,7 +29,7 @@ Usage
 
 from langgraph.graph import END, START, StateGraph
 
-from mad_sc.graph import _GROUNDING_DEFAULT, _LEXICOGRAPHER_DEFAULT
+from mad_sc.graph import _GROUNDING_DEFAULT, _LEXICOGRAPHER_DEFAULT, _SC_DEFAULT
 from mad_sc.nodes import (
     closing_refuse_node,
     closing_support_node,
@@ -38,6 +38,7 @@ from mad_sc.nodes import (
     lexicographer_node,
     rebuttal_refuse_node,
     rebuttal_support_node,
+    self_consistency_judge_node,
     should_continue,
     team_refuse_node,
     team_support_node,
@@ -62,6 +63,7 @@ def compile_multi_round_graph(
     num_rounds: int = 3,
     use_grounding: bool = _GROUNDING_DEFAULT,
     use_lexicographer: bool = _LEXICOGRAPHER_DEFAULT,
+    use_self_consistency: bool = _SC_DEFAULT,
 ):
     """Build and compile the multi-round MAD-SC StateGraph.
 
@@ -118,7 +120,8 @@ def compile_multi_round_graph(
     builder.add_node("closing_support", closing_support_node)
 
     # --- Judge (terminal) -----------------------------------------------
-    builder.add_node("judge", judge_node)
+    judge_fn = self_consistency_judge_node if use_self_consistency else judge_node
+    builder.add_node("judge", judge_fn)
 
     # --- Edges ----------------------------------------------------------
     # Opening pass: sequential (Support writes first, then Refuse responds).

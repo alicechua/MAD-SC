@@ -868,6 +868,117 @@ Output ONLY valid JSON with EXACTLY these two fields:
   {{"coarse_category": "STABLE|Transfer|Broadening|Narrowing", "reasoning": "<brief justification>"}}\
 """
 
+_JUDGE_COARSE_SYSTEM_LEXICOGRAPHER = """\
+You are a conservative Lexicographer and LLM Judge specialising in diachronic semantics. \
+Given two debaters' arguments about a target word, decide the COARSE category of semantic change.
+
+Categories
+----------
+STABLE     — No genuine change. Any variation is situational polysemy or register, \
+             not a true shift in the word's core meaning.
+Broadening — The word's referential scope WIDENED to cover more referents.
+             Diagnostic: the old meaning is a proper subset of the new meaning.
+Narrowing  — The word's referential scope NARROWED to a more specific subset.
+             Diagnostic: the new meaning is a proper subset of the old meaning.
+Transfer   — The meaning was transferred to a new referent or domain via some \
+             mechanism (resemblance, association, irony, shortening, etc.).
+             Diagnostic: the new referent/domain is NOT simply a wider or narrower \
+             version of the old — it is a qualitatively different one.
+
+{fewshot_block}
+
+Decision rules (HIGH BURDEN for change)
+-----------------------------------------
+1. If BOTH arguments agree there is no change → lean STABLE.
+2. If the new referents are strictly a larger set → BROADENING.
+3. If the new referents are strictly a smaller set → NARROWING.
+4. If the new referent is qualitatively different (different domain, reversed polarity, \
+   ironic inversion, compound shortening) → TRANSFER.
+5. Weigh QUALITY of evidence over volume. Prefer concrete, historical evidence over \
+   theoretical associations.
+6. The burden of proof lies HEAVILY on Team Support. Default to STABLE unless the \
+   evidence for a permanent, systemic shift in referential scope is overwhelming and \
+   incontrovertible.
+7. If the change appears to be temporary rhetorical flair, rare usage, or a stylistic \
+   trend without widespread entrenchment → STABLE.
+
+Output ONLY valid JSON with EXACTLY these two fields:
+  {{"coarse_category": "STABLE|Transfer|Broadening|Narrowing", "reasoning": "<brief justification>"}}\
+"""
+
+_JUDGE_COARSE_SYSTEM_COGNITIVE = """\
+You are an analytical Cognitive Semanticist and LLM Judge specialising in diachronic semantics. \
+Given two debaters' arguments about a target word, decide the COARSE category of semantic change.
+
+Categories
+----------
+STABLE     — No genuine change. Any variation is situational polysemy or register, \
+             not a true shift in the word's core meaning.
+Broadening — The word's referential scope WIDENED to cover more referents.
+             Diagnostic: the old meaning is a proper subset of the new meaning.
+Narrowing  — The word's referential scope NARROWED to a more specific subset.
+             Diagnostic: the new meaning is a proper subset of the old meaning.
+Transfer   — The meaning was transferred to a new referent or domain via some \
+             mechanism (resemblance, association, irony, shortening, etc.).
+             Diagnostic: the new referent/domain is NOT simply a wider or narrower \
+             version of the old — it is a qualitatively different one.
+
+{fewshot_block}
+
+Decision rules (NEUTRAL BURDEN)
+---------------------------------
+1. Weigh the COMPARATIVE QUALITY of evidence equally between both teams.
+2. Preponderance of evidence: if arguments demonstrate a new mental mapping, conceptual \
+   resemblance (Metaphor/Analogy), or spatial/temporal contiguity (Metonymy) established \
+   in regular use → lean CHANGE.
+3. If the new referents are strictly a larger set → BROADENING.
+4. If the new referents are strictly a smaller set → NARROWING.
+5. If the new referent is qualitatively different (different domain, reversed polarity, \
+   ironic inversion, compound shortening) → TRANSFER.
+6. Pay special attention to whether Team Support successfully proves Metaphor, Metonymy, \
+   or Analogy as the mechanism of transfer.
+
+Output ONLY valid JSON with EXACTLY these two fields:
+  {{"coarse_category": "STABLE|Transfer|Broadening|Narrowing", "reasoning": "<brief justification>"}}\
+"""
+
+_JUDGE_COARSE_SYSTEM_SOCIOLINGUIST = """\
+You are an observant Sociolinguist and LLM Judge specialising in diachronic semantics and \
+pragmatic usage. Given two debaters' arguments about a target word, decide the COARSE category \
+of semantic change.
+
+Categories
+----------
+STABLE     — No genuine change. Any variation is situational polysemy or register, \
+             not a true shift in the word's core meaning.
+Broadening — The word's referential scope WIDENED to cover more referents.
+             Diagnostic: the old meaning is a proper subset of the new meaning.
+Narrowing  — The word's referential scope NARROWED to a more specific subset.
+             Diagnostic: the new meaning is a proper subset of the old meaning.
+Transfer   — The meaning was transferred to a new referent or domain via some \
+             mechanism (resemblance, association, irony, shortening, etc.).
+             Diagnostic: the new referent/domain is NOT simply a wider or narrower \
+             version of the old — it is a qualitatively different one.
+
+{fewshot_block}
+
+Decision rules (LOW BURDEN for change)
+----------------------------------------
+1. Weigh the pragmatic implications and real-world communicative intent of the word.
+2. Highly sensitive to drift: even if the original meaning persists, if Team Support \
+   provides valid evidence that a secondary meaning, a shift in polarity (irony/auto-antonym), \
+   or an ellipsis has become widely understood → lean CHANGE.
+3. Do NOT require the old meaning to be dead; parallel new meanings count as change.
+4. If the new referents are strictly a larger set → BROADENING.
+5. If the new referents are strictly a smaller set → NARROWING.
+6. If the new referent is qualitatively different (different domain, reversed polarity, \
+   ironic inversion, compound shortening) → TRANSFER.
+
+Output ONLY valid JSON with EXACTLY these two fields:
+  {{"coarse_category": "STABLE|Transfer|Broadening|Narrowing", "reasoning": "<brief justification>"}}\
+"""
+
+
 _JUDGE_COARSE_USER = """\
 Evaluate the debate about the word "{word}" ({t_old} vs. {t_new}).
 
@@ -1042,10 +1153,12 @@ def _run_coarse_stage(word: str, t_old: str, t_new: str,
                       lexicographer_dossier: str = "",
                       debate_history: list = None,
                       num_rounds: int = 1,
-                      word_type: str = "word") -> _CoarseVerdict | None:
+                      word_type: str = "word",
+                      judge_system_override: str | None = None) -> _CoarseVerdict | None:
     """Stage 1: classify into STABLE / Transfer / Broadening / Narrowing."""
     fewshot = _build_fewshot_block(current_word=word)
-    coarse_prompt = _JUDGE_COARSE_SYSTEM.format(fewshot_block=fewshot)
+    base_template = judge_system_override if judge_system_override is not None else _JUDGE_COARSE_SYSTEM
+    coarse_prompt = base_template.format(fewshot_block=fewshot)
     coarse_system = (
         f"{lexicographer_dossier}\n\n{coarse_prompt}"
         if lexicographer_dossier else coarse_prompt
@@ -1201,6 +1314,112 @@ def judge_node(state: GraphState) -> dict:
     # ── Stage 2: Fine-grained Transfer ───────────────────────────────────────
     verdict = _run_transfer_stage(
         word, t_old, t_new, arg_change, arg_stable, coarse.reasoning,
+        lexicographer_dossier=dossier,
+    )
+    return {"verdict": verdict.model_dump()}
+
+
+def self_consistency_judge_node(state: GraphState) -> dict:
+    """Self-consistency judge: 3 persona judges, majority vote, then fine stage.
+
+    Judges:
+      1. Lexicographer   — high burden for change (conservative)
+      2. CognitiveSemant — neutral burden (preponderance of evidence)
+      3. Sociolinguist   — low burden for change (pragmatic sensitivity)
+
+    Voting:
+      - All 3 coarse stages run in parallel (ThreadPoolExecutor).
+      - Majority wins on STABLE vs non-STABLE; tie → STABLE.
+      - Change category: prefer CognitiveSemant's pick; otherwise plurality of change votes.
+      - Transfer → _run_transfer_stage() as normal.
+    """
+    import concurrent.futures
+    from collections import Counter
+
+    word = state["word"]
+    t_old, t_new = state["t_old"], state["t_new"]
+    arg_change, arg_stable = state["arg_change"], state["arg_stable"]
+    dossier = state.get("lexicographer_dossier", "") or ""
+    debate_history = state.get("debate_history", [])
+    num_rounds = state.get("num_rounds", 1)
+    word_type = state.get("word_type", "word")
+
+    personas = [
+        ("Lexicographer",   _JUDGE_COARSE_SYSTEM_LEXICOGRAPHER),
+        ("CognitiveSemant", _JUDGE_COARSE_SYSTEM_COGNITIVE),
+        ("Sociolinguist",   _JUDGE_COARSE_SYSTEM_SOCIOLINGUIST),
+    ]
+
+    def run_one(args):
+        name, sys_override = args
+        r = _run_coarse_stage(
+            word, t_old, t_new, arg_change, arg_stable,
+            lexicographer_dossier=dossier,
+            debate_history=debate_history,
+            num_rounds=num_rounds,
+            word_type=word_type,
+            judge_system_override=sys_override,
+        )
+        print(f"[SC:{name}] '{word}' → {r.coarse_category if r else 'FAILED'}")
+        return name, r
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        results = dict(pool.map(run_one, personas))
+
+    valid = [(n, r) for n, r in results.items() if r is not None]
+    if not valid:
+        return {"verdict": JudgeVerdict(
+            word=word, verdict="STABLE",
+            change_type=None, causal_driver=None, break_point_year=None,
+            reasoning="Self-consistency: all 3 judges failed; defaulting to STABLE.",
+        ).model_dump()}
+
+    stable_votes = [(n, r) for n, r in valid if r.coarse_category == "STABLE"]
+    change_votes = [(n, r) for n, r in valid if r.coarse_category != "STABLE"]
+    n_stable, n_change = len(stable_votes), len(change_votes)
+    print(f"[SC-VOTE] '{word}': STABLE={n_stable}, CHANGE={n_change} / {len(valid)}")
+
+    # ── STABLE majority (tie → STABLE) ──────────────────────────────────────
+    if n_stable >= n_change:
+        cs = results.get("CognitiveSemant")
+        src = cs if (cs and cs.coarse_category == "STABLE") else stable_votes[0][1]
+        return {"verdict": JudgeVerdict(
+            word=word, verdict="STABLE",
+            change_type=None, causal_driver=None, break_point_year=None,
+            reasoning=f"SC vote {n_stable}/{len(valid)} STABLE: {src.reasoning}",
+        ).model_dump()}
+
+    # ── CHANGE majority — pick winning category ──────────────────────────────
+    cs = results.get("CognitiveSemant")
+    if cs and cs.coarse_category != "STABLE":
+        winning_cat    = cs.coarse_category
+        winning_reason = cs.reasoning
+    else:
+        cat_counts  = Counter(r.coarse_category for _, r in change_votes)
+        winning_cat = cat_counts.most_common(1)[0][0]
+        winning_reason = next(r.reasoning for _, r in change_votes if r.coarse_category == winning_cat)
+
+    combined_reason = f"SC vote {n_change}/{len(valid)} CHANGE ({winning_cat}): {winning_reason}"
+
+    if winning_cat == "Broadening":
+        print(f"[SC-JUDGE] '{word}' → Broadening → Generalization (direct)")
+        return {"verdict": JudgeVerdict(
+            word=word, verdict="CHANGE DETECTED",
+            change_type="Generalization", causal_driver="Linguistic Drift",
+            break_point_year=None, reasoning=combined_reason,
+        ).model_dump()}
+
+    if winning_cat == "Narrowing":
+        print(f"[SC-JUDGE] '{word}' → Narrowing → Specialization (direct)")
+        return {"verdict": JudgeVerdict(
+            word=word, verdict="CHANGE DETECTED",
+            change_type="Specialization", causal_driver="Linguistic Drift",
+            break_point_year=None, reasoning=combined_reason,
+        ).model_dump()}
+
+    # Transfer → fine-grained stage
+    verdict = _run_transfer_stage(
+        word, t_old, t_new, arg_change, arg_stable, combined_reason,
         lexicographer_dossier=dossier,
     )
     return {"verdict": verdict.model_dump()}
