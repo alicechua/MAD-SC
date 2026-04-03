@@ -55,7 +55,7 @@ log = logging.getLogger("lsc_eval")
 # ---------------------------------------------------------------------------
 # Paths (adjust if your layout differs)
 # ---------------------------------------------------------------------------
-CONTEXT_JSON = PROJECT_ROOT / "data" / "lsc_context_data_engl.json"
+CONTEXT_JSON = PROJECT_ROOT / "data" / "LSC-CTD" / "lsc_context_data_engl.json"
 GROUND_TRUTH_TSV = PROJECT_ROOT / "data" / "LSC-CTD" / "blank_dataset.tsv"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "eval_results"
 
@@ -499,6 +499,12 @@ def main():
         help="Directory for results and traces (default: eval_results/)",
     )
     parser.add_argument(
+        "--session",
+        type=str,
+        default=None,
+        help="Optional run label; writes outputs under <output-dir>/<session>/.",
+    )
+    parser.add_argument(
         "--context-json",
         type=Path,
         default=CONTEXT_JSON,
@@ -586,6 +592,7 @@ def main():
         help="Number of rebuttal rounds after the opening exchange (default: 3). Only used with --multi-round.",
     )
     args = parser.parse_args()
+    run_output_dir = args.output_dir / args.session if args.session else args.output_dir
 
     # Propagate seed into the environment so _get_llm() picks it up at import time
     # (nodes.py reads LLM_SEED dynamically inside _get_llm, so os.environ works here).
@@ -666,7 +673,7 @@ def main():
                  i, len(aligned), word, entry["ground_truth_type"])
         log.info("=" * 60)
 
-        trace_path = args.output_dir / "traces" / f"{word}.json"
+        trace_path = run_output_dir / "traces" / f"{word}.json"
 
         # Resume logic: skip if a successful trace already exists
         if args.resume and trace_path.exists():
@@ -735,7 +742,7 @@ def main():
 
         # Save trace
         save_trace(
-            args.output_dir, word, result,
+            run_output_dir, word, result,
             entry["ground_truth_type"], predicted,
         )
 
@@ -758,9 +765,9 @@ def main():
     # ------------------------------------------------------------------
     # 5. Save summary
     # ------------------------------------------------------------------
-    save_summary(args.output_dir, records, fine_metrics, coarse_metrics)
+    save_summary(run_output_dir, records, fine_metrics, coarse_metrics)
 
-    print(f"\nAll results saved to: {args.output_dir}/")
+    print(f"\nAll results saved to: {run_output_dir}/")
     print(f"  eval_summary.json  — metrics + per-word results")
     print(f"  traces/            — full pipeline outputs per word")
 

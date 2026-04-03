@@ -70,6 +70,13 @@ def main():
         metavar="DIR",
         help="Directory to write output files (default: current working directory)",
     )
+    parser.add_argument(
+        "--session",
+        type=str,
+        default=None,
+        metavar="NAME",
+        help="Optional run label appended to output filenames (e.g., pilot1).",
+    )
     grounding_group = parser.add_mutually_exclusive_group()
     grounding_group.add_argument(
         "--grounding",
@@ -141,8 +148,9 @@ def main():
     run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir) if args.out_dir else Path.cwd()
     out_dir.mkdir(parents=True, exist_ok=True)
-    debate_logs_file   = out_dir / f"debate_logs_{run_ts}.json"
-    results_file       = out_dir / f"evaluation_results_{run_ts}.json"
+    session_suffix = f"_{args.session}" if args.session else ""
+    debate_logs_file   = out_dir / f"debate_logs{session_suffix}_{run_ts}.json"
+    results_file       = out_dir / f"evaluation_results{session_suffix}_{run_ts}.json"
     
     y_true = []
     y_pred = []
@@ -260,7 +268,7 @@ def main():
     
     try:
         from scripts.export_to_markdown import export_debate_to_md
-        md_file = out_dir / f"debate_logs_{run_ts}.md"
+        md_file = out_dir / f"debate_logs{session_suffix}_{run_ts}.md"
         export_debate_to_md(str(debate_logs_file), str(md_file))
     except Exception as e:
         print(f"Could not export Markdown: {e}")
